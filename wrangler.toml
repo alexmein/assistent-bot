@@ -1,0 +1,7 @@
+name = "assistent-bot"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Secrets (nie hier, nur per `wrangler secret put`):
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID
