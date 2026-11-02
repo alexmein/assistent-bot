@@ -10,8 +10,8 @@ import { commitMessagesSince, readRepoFile, writeTriageFile } from "./github";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 import { sendDue } from "./reminders";
-import { prepareTriage, renderTriage, telegramLine } from "./triage";
-import { hm, parseHm, quietTime, runDue, type Job } from "./schedule";
+import { critical, notice, prepareTriage, renderTriage, telegramLine, type Vorbereitung } from "./triage";
+import { berlin, hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
 
@@ -102,10 +102,12 @@ function jobs(env: Env): Job[] {
   if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.ANTHROPIC_API_KEY && env.STATE) {
     list.push({
       name: "triage",
-      at: (day) => (day === "Mon" ? hm(8, 45) : null),
+      at: (day) => (day === "Sat" || day === "Sun" ? null : hm(8, 45)),
       run: async () => {
-        const line = await triage(env);
-        await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, line);
+        const previous = Number((await env.STATE!.get(TRIAGE_CRITICAL)) ?? 0);
+        const { v, path } = await triage(env);
+        const text = notice(v, berlin(new Date()).weekday, previous);
+        if (text) await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, `${text} (${path})`);
       },
     });
   }
@@ -123,25 +125,27 @@ function jobs(env: Env): Job[] {
 }
 
 const LAST_BRIEFING = "briefing:last";
-const LAST_TRIAGE = "triage:last";
 const TRIAGE_REQUESTED = "triage:requested";
+const TRIAGE_CRITICAL = "triage:critical"; // fristkritische Punkte der letzten Vorbereitung
 
 async function requestedTriage(env: Env): Promise<void> {
   if (!(await env.STATE!.get(TRIAGE_REQUESTED))) return;
   await env.STATE!.delete(TRIAGE_REQUESTED); // vorher löschen: lieber einmal neu anfordern als doppelt laufen
   let text: string;
   try {
-    text = await triage(env);
+    const { v, path } = await triage(env);
+    text = `${telegramLine(v)} (${path})`;
   } catch (e) {
     text = `Triage-Vorbereitung fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
   }
   await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text);
 }
 
-// Bereitet die Triage vor, schreibt triage/JJJJ-MM-TT.md (Commit „via Briefing“) und gibt die Telegram-Zeile zurück.
-async function triage(env: Env): Promise<string> {
+// Bereitet die Triage vor und schreibt triage/JJJJ-MM-TT.md (Commit „via Briefing“). Die Commits der letzten 14 Tage
+// zeigen dem Modell, was neu ist; die Dateien selbst enthalten den ganzen offenen Stand.
+async function triage(env: Env): Promise<{ v: Vorbereitung; path: string }> {
   const started = new Date();
-  const since = (await env.STATE!.get(LAST_TRIAGE)) ?? new Date(started.getTime() - 14 * 86_400_000).toISOString();
+  const since = new Date(started.getTime() - 14 * 86_400_000).toISOString();
   const v = await prepareTriage(
     {
       readFile: (path) => readRepoFile(env, path),
@@ -154,8 +158,8 @@ async function triage(env: Env): Promise<string> {
   const date = started.toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const path = `triage/${date}.md`;
   await writeTriageFile(env, path, renderTriage(v, date), `${path}: Vorbereitung (via Briefing)`);
-  await env.STATE!.put(LAST_TRIAGE, started.toISOString());
-  return `${telegramLine(v)} (${path})`;
+  await env.STATE!.put(TRIAGE_CRITICAL, String(critical(v)));
+  return { v, path };
 }
 
 function hoursAgo(h: number): string {
