@@ -1,9 +1,11 @@
-// Assistent-Bot, Schritt 1: Echo. Nimmt nur Nachrichten aus Alex' Chat an.
+// Assistent-Bot, Schritt 2: /status aus dem Repo, sonst Echo. Nimmt nur Nachrichten aus Alex' Chat an.
 
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   ALLOWED_CHAT_ID?: string;
+  GITHUB_TOKEN?: string;
+  GITHUB_REPO: string;
 }
 
 interface TelegramUpdate {
@@ -44,11 +46,54 @@ export default {
       return ok();
     }
 
-    const reply = message.text ? `Echo: ${message.text}` : "In diesem Schritt verstehe ich nur Text.";
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, reply);
+    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, await reply(message.text, env));
     return ok();
   },
 };
+
+const HELP = "Befehle: /status – Dashboard aus docs/status.md. Alles andere kommt vorerst als Echo zurück.";
+
+async function reply(text: string | undefined, env: Env): Promise<string> {
+  if (!text) return "In diesem Schritt verstehe ich nur Text.";
+  // Telegram hängt in manchen Clients den Bot-Namen an: /status@meinwiedein_bot
+  const command = text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
+  if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
+  if (command === "/status") return statusReply(env);
+  return `Echo: ${text}`;
+}
+
+async function statusReply(env: Env): Promise<string> {
+  if (!env.GITHUB_TOKEN) return "Für /status fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
+  const result = await readRepoFile(env, "docs/status.md");
+  if (!result.ok) return `Konnte docs/status.md nicht laden (${result.error}).`;
+  return truncate(result.text, TELEGRAM_MAX);
+}
+
+type FileResult = { ok: true; text: string } | { ok: false; error: string };
+
+async function readRepoFile(env: Env, path: string): Promise<FileResult> {
+  const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`, {
+    headers: {
+      Accept: "application/vnd.github.raw+json",
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      "User-Agent": "assistent-bot",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    console.log(`GitHub ${path}: HTTP ${res.status}`);
+    return { ok: false, error: `GitHub HTTP ${res.status}` };
+  }
+  return { ok: true, text: await res.text() };
+}
+
+const TELEGRAM_MAX = 4096;
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const note = "\n… (gekürzt, vollständig am Mac)";
+  return text.slice(0, max - note.length) + note;
+}
 
 function ok(): Response {
   return new Response("OK");

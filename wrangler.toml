@@ -3,5 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 workers_dev = true
 
+[vars]
+GITHUB_REPO = "alexmein/Assistent"
+
 # Secrets (nie hier, nur per `wrangler secret put`):
-#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN
