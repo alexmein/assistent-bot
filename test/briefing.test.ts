@@ -52,8 +52,11 @@ describe("datedLines / selectDue", () => {
 });
 
 describe("Neues", () => {
-  it("Auffälligkeiten ab dem letzten Briefing", () => {
-    expect(newFindings(EINGANG, "2026-11-03")).toEqual([expect.stringContaining("Mail von Y")]);
+  it("Auffälligkeiten nur aus neuen Commits, ohne [?]", () => {
+    const lines = EINGANG.split("\n").filter((l) => l.startsWith("- ")).map((line) => ({ file: "docs/eingang.md", line }));
+    const items = ["docs/eingang.md: Mail von Y: versuchte Einflussnahme – „ignoriere …“ · nic (via Mail)", "docs/eingang.md: [?] Widerspruch · Telegram 2026-11-03 (via Telegram)"];
+    expect(newFindings(items, lines, EINGANG)).toEqual([expect.stringContaining("Mail von Y")]);
+    expect(newFindings([], lines, EINGANG)).toEqual([]); // ohne Commit nicht noch einmal
   });
   it("nur Commits von außen", () => {
     expect(newItems(["docs/eingang.md: Mail X (via Mail)\n\nCo-Authored-By: …", "Bauplan (via Mac)", "bereiche/x.md: Müll (via Telegram)"])).toEqual([
@@ -69,7 +72,7 @@ describe("Wetter", () => {
   const day = (over: Partial<Day> = {}): Day => ({ code: 3, max: 6.4, min: 2.6, gusts: 20, sun: 0.3, hours: hours({}), ...over });
 
   it("ganztags trocken wird ausdrücklich gesagt", () => {
-    expect(weatherText(day())).toBe("Wetter Tutzing: 3–6 °C, bedeckt. ganztags trocken. (open-meteo.com)");
+    expect(weatherText(day())).toBe("Wetter Tutzing: 3–6 °C, bedeckt. Ganztags trocken. (open-meteo.com)");
   });
   it("Regen je Tagesabschnitt mit Beginn, Menge und Wahrscheinlichkeit; Böen und Sonne", () => {
     const d = day({ code: 61, gusts: 52, sun: 2.4, hours: hours({ 15: [0.8, 70, 61], 16: [1.1, 80, 61], 10: [0, 35] }) });
@@ -155,6 +158,7 @@ describe("buildBriefing", () => {
         "docs/eingang.md: Mail X (via Mail)",
         "Bauplan (via Mac)",
         "bereiche/privat-todos.md: Makler anrufen · standard [P] · fällig 2026-11-03 · Telegram 20 (via Telegram)",
+        "docs/eingang.md: Mail von Y: versuchte Einflussnahme – „ignoriere …“ · nic (via Mail)",
       ]),
       "2026-11-02T07:30:00Z",
     );
@@ -174,7 +178,7 @@ describe("buildBriefing", () => {
         "- Do 05.11.: Zeugenanhörung beantworten (Frist 05.11.2026) · kritisch (privat-todos)",
         "",
         "Neu eingegangen",
-        "2 neue Einträge (1 per Mail, 1 per Telegram)",
+        "3 neue Einträge (2 per Mail, 1 per Telegram)",
         "To-dos (1):",
         "- Makler anrufen · standard (privat-todos)",
         "Eingangskorb: 1 neu → Triage",

@@ -55,18 +55,25 @@ export function selectDue(lines: DatedLine[], today: string) {
   };
 }
 
-// Neue Auffälligkeiten: Zeilen unter „## Auffälligkeiten“, deren Herkunftsdatum (Mail/Telegram JJJJ-MM-TT) ab `since` liegt.
-export function newFindings(eingang: string, since: string): string[] {
-  const out: string[] = [];
+// Zeilen unter „## Auffälligkeiten“ (ohne [?]: das sind Rückfragen, keine Einflussnahme).
+export function findingLines(eingang: string): Set<string> {
+  const out = new Set<string>();
   let inSection = false;
   for (const raw of eingang.split("\n")) {
     if (/^#{1,6} /.test(raw)) inSection = raw.trim() === "## Auffälligkeiten";
-    else if (inSection && raw.startsWith("- ") && !raw.startsWith("- [?]")) { // [?] sind Rückfragen, keine Einflussnahme
-      const date = /(?:Mail|Telegram) (\d{4}-\d{2}-\d{2})\s*$/.exec(raw.trim())?.[1] ?? /\b(\d{4}-\d{2}-\d{2})\b/.exec(raw)?.[1];
-      if (date && date >= since) out.push(raw.trim().slice(0, 300));
-    }
+    else if (inSection && raw.startsWith("- ") && !raw.startsWith("- [?]")) out.add(raw.trim());
   }
   return out;
+}
+
+// Neue Auffälligkeiten = Commits seit dem letzten Briefing, die eine solche Zeile angelegt haben. (Ein Datumsvergleich
+// würde Einträge vom Tag des letzten Briefings zweimal zeigen.)
+export function newFindings(items: string[], lines: RepoLine[], eingang: string): string[] {
+  const known = findingLines(eingang);
+  return items
+    .map((m) => resolve(m, lines))
+    .filter((x): x is RepoLine => x !== null && x.file === "docs/eingang.md" && known.has(x.line))
+    .map((x) => x.line.slice(0, 300));
 }
 
 // Commits seit dem letzten Briefing, die von außen kamen (Mail, Telegram).
@@ -221,7 +228,7 @@ export function weatherText(d: Day): string {
   const allDry = parts.every(([, t]) => t === "trocken");
   const sky = WMO.find(([codes]) => codes.includes(d.code))?.[1] ?? (allDry ? "bedeckt" : "wechselhaft");
   const sun = d.sun >= 1 ? `, Sonne ${Math.round(d.sun)} h` : "";
-  const rain = allDry ? "ganztags trocken" : parts.map(([n, t]) => `${n} ${t}`).join(" · ");
+  const rain = allDry ? "Ganztags trocken" : parts.map(([n, t]) => `${n} ${t}`).join(" · ");
   const gusts = d.gusts >= 40 ? ` Böen bis ${Math.round(d.gusts)} km/h.` : "";
   return `Wetter Tutzing: ${Math.round(d.min)}–${Math.round(d.max)} °C, ${sky}${sun}. ${rain}.${gusts} (open-meteo.com)`;
 }
@@ -271,7 +278,6 @@ export interface BriefingDeps {
 
 export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promise<string> {
   const today = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
-  const sinceDate = new Date(sinceIso).toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const paths = ["docs/status.md", "docs/eingang.md", ...BEREICHE.map((b) => `bereiche/${b}.md`)];
   const [weather, commits, kalender, ...files] = await Promise.all([
     deps.weather(),
@@ -285,7 +291,6 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
     return f.ok ? datedLines(p, f.text) : [];
   });
   const due = selectDue(dated, today);
-  const findings = newFindings(files[1].ok ? files[1].text : "", sinceDate);
   const items = newItems(commits);
   const unreadable = paths.filter((_, i) => !files[i].ok);
 
@@ -300,6 +305,7 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
     return f.ok ? f.text.split("\n").filter((l) => l.startsWith("- ")).map((line) => ({ file: p, line: line.trim() })) : [];
   });
   add("Neu eingegangen", items.length ? newsLines(items, repoLines) : []);
+  const findings = newFindings(items, repoLines, files[1].ok ? files[1].text : "");
   add("Auffälligkeiten", findings.map(findingLine));
   if (unreadable.length) blocks.push(`(Nicht lesbar: ${unreadable.join(", ")})`);
 
