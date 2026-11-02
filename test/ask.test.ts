@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import type { AppendResult } from "../src/append";
-import { ask, confirm, costUsd, type AskDeps } from "../src/ask";
+import { ask, attachmentContent, confirm, costUsd, type AskDeps, type Attachment } from "../src/ask";
 import type { FileResult } from "../src/github";
 
 const usage = { input_tokens: 1000, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -205,5 +205,92 @@ describe("confirm", () => {
   });
   it("lässt „nicht abgelegt“ stehen", () => {
     expect(confirm([], "Nicht abgelegt: das gehört in die Triage.")).toBe("Nicht abgelegt: das gehört in die Triage.");
+  });
+});
+
+describe("Dokumente und Termine", () => {
+  const pdf: Attachment = { fileName: "scan.pdf", mime: "application/pdf", bytes: new Uint8Array([37, 80, 68, 70]), caption: "Mahnung Finanzamt" };
+  const withGoogle = (responses: unknown[]) => {
+    const x = deps(responses);
+    const saveDocument = vi.fn(async (folder: string[], name: string) => ({ name, folder: folder.join("/"), link: "https://drive/f" }));
+    const createEvent = vi.fn(async () => {});
+    x.d.saveDocument = saveDocument;
+    x.d.createEvent = createEvent;
+    return { ...x, saveDocument, createEvent };
+  };
+  const toolNames = (create: ReturnType<typeof vi.fn>) => (paramsOf(create, 0).tools as Anthropic.Tool[]).map((t) => t.name);
+  const call = (name: string, input: unknown, id = "x") => ({ content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use", usage });
+
+  it("Text: Kalender verfügbar, Ablage nicht", async () => {
+    const { d, create } = withGoogle([text("ok")]);
+    await ask("x", d);
+    expect(toolNames(create)).toEqual(["read_file", "append_entry", "create_event"]);
+  });
+
+  it("Dokument: Ablage verfügbar, Kalender nicht", async () => {
+    const { d, create } = withGoogle([text("ok")]);
+    await ask("", d, pdf);
+    expect(toolNames(create)).toEqual(["read_file", "append_entry", "save_document"]);
+    const content = paramsOf(create, 0).messages[0].content as Anthropic.ContentBlockParam[];
+    expect(content[0]).toMatchObject({ type: "document", source: { media_type: "application/pdf", data: "JVBERg==" } });
+    expect((content[1] as Anthropic.TextBlockParam).text).toContain("Begleittext von Alex: Mahnung Finanzamt");
+  });
+
+  it("legt ab, hängt den Verweis an und bestätigt beides", async () => {
+    const { d, saveDocument } = withGoogle([
+      call("save_document", { folder: "Steuern/2025", name: "2026-10-28 Finanzamt Mahnung" }),
+      appendCall("bereiche/steuern.md", "## Verweise", "- 2026-10-28 Finanzamt Mahnung.pdf – Drive: https://drive/f"),
+      text(""),
+    ]);
+    const out = await ask("", d, pdf);
+    expect(saveDocument).toHaveBeenCalledWith(["Steuern", "2025"], "2026-10-28 Finanzamt Mahnung.pdf", pdf);
+    expect(out).toBe("In Drive: Steuern/2025/2026-10-28 Finanzamt Mahnung.pdf\nAbgelegt: steuern › Verweise");
+  });
+
+  it("legt eine Datei nur einmal ab", async () => {
+    const both = {
+      content: [
+        { type: "tool_use", id: "a", name: "save_document", input: { folder: "Eingang", name: "Brief eins" } },
+        { type: "tool_use", id: "b", name: "save_document", input: { folder: "Eingang", name: "Brief zwei" } },
+      ],
+      stop_reason: "tool_use",
+      usage,
+    };
+    const { d, saveDocument, create } = withGoogle([both, text("")]);
+    await ask("", d, pdf);
+    expect(saveDocument).toHaveBeenCalledOnce();
+    expect(lastResults(create, 1)[1]).toMatchObject({ is_error: true, content: "Die Datei ist schon abgelegt." });
+  });
+
+  it("verweigert Kalendereinträge bei Dokumenten, selbst wenn das Modell es versucht", async () => {
+    const { d, createEvent } = withGoogle([call("create_event", { title: "Anhörung", date: "2026-11-20" }), text("")]);
+    await ask("", d, pdf);
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it("trägt von Alex genannte Termine ein", async () => {
+    const { d, createEvent } = withGoogle([call("create_event", { title: "Zahnarzt", date: "2026-11-05", start: "10:00" }), text("")]);
+    expect(await ask("Do 10 Uhr Zahnarzt", d)).toBe("Im Kalender: Zahnarzt, 2026-11-05 10:00–11:00");
+    expect(createEvent).toHaveBeenCalledOnce();
+  });
+
+  it("meldet Google-Fehler ans Modell statt abzubrechen", async () => {
+    const { GoogleError } = await import("../src/google");
+    const { d, create, createEvent } = withGoogle([call("create_event", { title: "Zahnarzt", date: "2026-11-05" }), text("Kalender gerade nicht erreichbar.")]);
+    createEvent.mockRejectedValueOnce(new GoogleError("Kalender HTTP 403"));
+    expect(await ask("x", d)).toBe("Kalender gerade nicht erreichbar.");
+    expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true, content: "Kalender HTTP 403" });
+  });
+
+  it("ohne Google gibt es weder Ablage noch Kalender", async () => {
+    const { d, create } = deps([text("ok")]);
+    await ask("", d, pdf);
+    expect((paramsOf(create, 0).tools as Anthropic.Tool[]).map((t) => t.name)).toEqual(["read_file", "append_entry"]);
+  });
+
+  it("schickt unlesbare Dateien nur mit Namen", () => {
+    const docx = attachmentContent({ fileName: "v.docx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes: new Uint8Array(10) });
+    expect(docx).toHaveLength(1);
+    expect((docx[0] as Anthropic.TextBlockParam).text).toContain("nicht lesen");
   });
 });

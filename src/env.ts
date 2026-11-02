@@ -5,4 +5,8 @@ export interface Env {
   GITHUB_TOKEN?: string;
   GITHUB_REPO: string;
   ANTHROPIC_API_KEY?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REFRESH_TOKEN?: string;
+  DRIVE_ROOT_ID?: string;
 }

@@ -94,7 +94,7 @@ describe("Zugang", () => {
     const tg = mockTelegram();
     await worker.fetch(post(update(111)), env);
     const [, init] = tg.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(init.body as string).text).toBe("In diesem Schritt verstehe ich nur Text.");
+    expect(JSON.parse(init.body as string).text).toBe("Ich verstehe Text, Dateien und Fotos.");
   });
 });
 
@@ -147,5 +147,25 @@ describe("/status", () => {
     const tg = mockTelegram();
     await worker.fetch(post(update(111, "/start")), env);
     expect(sentText(tg)).toContain("/status");
+  });
+});
+
+describe("Dateien", () => {
+  const doc = { update_id: 2, message: { chat: { id: 111, type: "private" }, document: { file_id: "f1", file_name: "brief.pdf", mime_type: "application/pdf", file_size: 1000 } } };
+
+  it("sagt Bescheid, solange Google fehlt, ohne etwas herunterzuladen", async () => {
+    const tg = mockTelegram();
+    await worker.fetch(post(doc), env);
+    expect(sentText(tg)).toBe("Für Dateien fehlt noch die Google-Anbindung.");
+    expect(tg.mock.calls.some(([u]) => String(u).includes("getFile"))).toBe(false);
+  });
+
+  it("lehnt Dateien über 20 MB ab", async () => {
+    const tg = mockTelegram();
+    const big = { ...doc, message: { ...doc.message, document: { ...doc.message.document, file_size: 21 * 1024 * 1024 } } };
+    const googleEnv = { ...env, ANTHROPIC_API_KEY: "k", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", GOOGLE_REFRESH_TOKEN: "r", DRIVE_ROOT_ID: "root" };
+    await worker.fetch(post(big), googleEnv);
+    expect(sentText(tg)).toMatch(/zu groß/);
+    expect(tg.mock.calls.some(([u]) => String(u).includes("getFile"))).toBe(false);
   });
 });

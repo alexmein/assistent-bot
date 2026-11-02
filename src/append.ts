@@ -7,7 +7,7 @@ const TODO_SECTIONS = ["### Aktiv", "### Wartet auf andere", "### Geparkt"];
 
 // Datei → erlaubte Abschnitte (Überschrift exakt wie in der Datei).
 export function allowedSections(path: string): string[] | null {
-  if (/^bereiche\/[a-z0-9][a-z0-9-]*\.md$/.test(path)) return TODO_SECTIONS;
+  if (/^bereiche\/[a-z0-9][a-z0-9-]*\.md$/.test(path)) return [...TODO_SECTIONS, "## Verweise"];
   if (path === "docs/eingang.md") return ["## Unzugeordnet", "## Vorschläge für neue Bereiche", "## Auffälligkeiten"];
   if (path === "docs/status.md") return ["## Kritisch / dringend", "## Fristen (nächste 30 Tage)", "## → am Mac"];
   return null;

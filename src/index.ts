@@ -1,19 +1,27 @@
-// Assistent-Bot, Schritt 4: /status aus dem Repo, sonst kleine Fragen und Erfassen mit Claude (nur Anhängen).
+// Assistent-Bot, Schritt 6: /status aus dem Repo; Text → Fragen, Erfassen, Termine; Dateien/Fotos → Drive.
 // Nimmt nur Nachrichten aus Alex' Chat an.
 
-import { ask, defaultDeps } from "./ask";
+import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
+import { googleReady } from "./google";
 
 export type { Env } from "./env";
 
 interface TelegramUpdate {
   update_id: number;
-  message?: {
-    chat: { id: number; type: string };
-    text?: string;
-  };
+  message?: TelegramMessage;
 }
+
+interface TelegramMessage {
+  chat: { id: number; type: string };
+  text?: string;
+  caption?: string;
+  document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  photo?: { file_id: string; file_size?: number }[];
+}
+
+const TELEGRAM_FILE_MAX = 20 * 1024 * 1024; // Bot-API lädt höchstens 20 MB herunter
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -45,16 +53,17 @@ export default {
       return ok();
     }
 
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, await reply(message.text, env, chatId));
+    const answer = message.document || message.photo ? await fileReply(message, env, chatId) : await reply(message.text, env, chatId);
+    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, answer);
     return ok();
   },
 };
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. Alles andere lege ich ab oder beantworte es als kleine Frage. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
-  if (!text) return "In diesem Schritt verstehe ich nur Text.";
+  if (!text) return "Ich verstehe Text, Dateien und Fotos.";
   // Telegram hängt in manchen Clients den Bot-Namen an: /status@meinwiedein_bot
   const command = text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
   if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
@@ -63,7 +72,41 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   if (!env.GITHUB_TOKEN) return "Mir fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
   if (!env.ANTHROPIC_API_KEY) return "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY).";
   await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
-  return truncate(await ask(text, defaultDeps(env)), TELEGRAM_MAX);
+  return truncate(await ask(text, defaultDeps(env, googleReady(env))), TELEGRAM_MAX);
+}
+
+async function fileReply(message: TelegramMessage, env: Env, chatId: string): Promise<string> {
+  if (!googleReady(env)) return "Für Dateien fehlt noch die Google-Anbindung.";
+  if (!env.GITHUB_TOKEN || !env.ANTHROPIC_API_KEY) return "Mir fehlen noch Zugänge (GITHUB_TOKEN / ANTHROPIC_API_KEY).";
+  const doc = message.document;
+  const photo = message.photo?.at(-1); // größte Auflösung
+  const fileId = doc?.file_id ?? photo!.file_id;
+  const size = doc?.file_size ?? photo?.file_size ?? 0;
+  if (size > TELEGRAM_FILE_MAX) return "Die Datei ist zu groß (Telegram erlaubt Bots höchstens 20 MB). Bitte direkt in Drive ablegen.";
+
+  await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
+  const bytes = await downloadTelegramFile(env.TELEGRAM_BOT_TOKEN, fileId);
+  if (!bytes) return "Konnte die Datei nicht von Telegram laden. Bitte noch einmal schicken.";
+  const attachment: Attachment = {
+    fileName: doc?.file_name ?? "Foto.jpg",
+    mime: doc?.mime_type ?? "image/jpeg",
+    bytes,
+    caption: message.caption,
+  };
+  return truncate(await ask("", defaultDeps(env, true), attachment), TELEGRAM_MAX);
+}
+
+async function downloadTelegramFile(token: string, fileId: string): Promise<Uint8Array | null> {
+  const info = await fetch(`https://api.telegram.org/bot${token}/getFile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  if (!info.ok) return null;
+  const path = ((await info.json()) as { result?: { file_path?: string } }).result?.file_path;
+  if (!path) return null;
+  const file = await fetch(`https://api.telegram.org/file/bot${token}/${path}`);
+  return file.ok ? new Uint8Array(await file.arrayBuffer()) : null;
 }
 
 async function statusReply(env: Env): Promise<string> {
