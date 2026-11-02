@@ -64,11 +64,11 @@ Was in die Triage gehört (§6.1):
 
 Regeln:
 - Höchstens 10 Punkte; fristkritische zuerst (Frist ≤ 7 Tage oder kritisch), dann nach Wichtigkeit. Was nicht passt: in „weitere“ zählen.
-- Zusammengehöriges bündeln (z. B. dieselbe Aufgabe in Bereich und Dashboard, mehrere Testeinträge, mehrere falsch eingeordnete Mail-Einträge) – ein Punkt.
+- Zusammengehöriges bündeln (z. B. dieselbe Aufgabe in Bereich und Dashboard, mehrere Testeinträge, mehrere falsch eingeordnete Mail-Einträge) – ein Punkt. Aber nur, was dieselbe Empfehlung bekommt: Alex' „ok“ gilt für den ganzen Punkt.
 - punkt: worum es geht, kurz und konkret. datei: die betroffene(n) Datei(en), z. B. „docs/eingang.md“ oder „bereiche/privat-todos.md + docs/status.md“.
 - empfehlung: bestätigen (Vorschlag übernehmen), ablehnen (entfernen), parken, erledigt? (wirkt erledigt – nur Alex entscheidet), klären (Alex muss etwas sagen, z. B. bei [?]).
 - begruendung: eine Zeile, warum. Schwächen und Risiken offen nennen (R4).
-- technik: technische Kleinigkeiten (Format, Tippfehler, falsche Tags, Fehleinsortierungen ohne inhaltliche Frage) gebündelt als EINE Frage, sonst null.
+- technik: technische Kleinigkeiten (Format, Tippfehler, falsche Tags, Fehleinsortierungen ohne inhaltliche Frage) gebündelt als EINE Frage in höchstens zwei Sätzen, sonst null.
 - Keine Nummern aus Konten, Verträgen, Ausweisen; keine Beträge aus Kontoauszügen (R7).`;
 
 export interface TriageDeps {
@@ -109,17 +109,22 @@ export function checkVorbereitung(raw: unknown): Vorbereitung {
   const v = raw as Partial<Vorbereitung>;
   const str = (x: unknown, max: number) => (typeof x === "string" ? x.replace(/\s+/g, " ").trim().slice(0, max) : "");
   const punkte = (Array.isArray(v.punkte) ? v.punkte : []).flatMap((p): Punkt[] => {
-    const punkt = str(p?.punkt, 300);
+    const punkt = cut(str(p?.punkt, 2000), 300);
     if (!punkt) return [];
     const empfehlung = (EMPFEHLUNGEN as readonly string[]).includes(p.empfehlung) ? p.empfehlung : "klären";
-    return [{ punkt, datei: str(p.datei, 150) || "?", empfehlung, begruendung: str(p.begruendung, 300), fristkritisch: p.fristkritisch === true }];
+    return [{ punkt, datei: str(p.datei, 150) || "?", empfehlung, begruendung: cut(str(p.begruendung, 2000), 300), fristkritisch: p.fristkritisch === true }];
   });
   const extra = Math.max(0, punkte.length - 10);
   return {
     punkte: punkte.slice(0, 10),
-    technik: str(v.technik, 500) || null,
+    technik: cut(str(v.technik, 2000), 600) || null,
     weitere: (Number.isInteger(v.weitere) ? Math.max(0, v.weitere!) : 0) + extra,
   };
+}
+
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, text.lastIndexOf(" ", max - 1) > 0 ? text.lastIndexOf(" ", max - 1) : max - 1)} …`;
 }
 
 // Format nach §6.2: nummeriert, Punkt · Datei · Empfehlung mit einer Zeile Begründung.

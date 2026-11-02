@@ -12,6 +12,9 @@ describe("checkVorbereitung", () => {
     expect(v.weitere).toBe(4);
     expect(v.technik).toBeNull();
     expect(checkVorbereitung({ punkte: [{ ...punkt(1), empfehlung: "löschen" }], technik: null, weitere: 0 }).punkte[0].empfehlung).toBe("klären");
+    const long = checkVorbereitung({ punkte: [], technik: "Wort ".repeat(200), weitere: 0 }).technik!;
+    expect(long.length).toBeLessThanOrEqual(601);
+    expect(long.endsWith("Wort …")).toBe(true); // an Wortgrenze, mit Auslassungszeichen
   });
 });
 
