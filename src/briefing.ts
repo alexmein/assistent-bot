@@ -60,7 +60,7 @@ export function newFindings(eingang: string, since: string): string[] {
   let inSection = false;
   for (const raw of eingang.split("\n")) {
     if (/^#{1,6} /.test(raw)) inSection = raw.trim() === "## Auffälligkeiten";
-    else if (inSection && raw.startsWith("- ")) {
+    else if (inSection && raw.startsWith("- ") && !raw.startsWith("- [?]")) { // [?] sind Rückfragen, keine Einflussnahme
       const date = /(?:Mail|Telegram) (\d{4}-\d{2}-\d{2})\s*$/.exec(raw.trim())?.[1] ?? /\b(\d{4}-\d{2}-\d{2})\b/.exec(raw)?.[1];
       if (date && date >= since) out.push(raw.trim().slice(0, 300));
     }
@@ -123,13 +123,46 @@ function item(l: DatedLine, withDate: boolean): string {
   return `- ${withDate ? `${shortDate(l.date)}: ` : ""}${core(l.line).text}${prio} (${where(l)})`;
 }
 
-function newsLines(items: string[]): string[] {
+export interface RepoLine {
+  file: string;
+  line: string;
+}
+
+// Commit-Nachricht „<pfad>: <Zeilenanfang, 60 Zeichen> (via …)“ → vollständige Zeile im Repo.
+export function resolve(message: string, lines: RepoLine[]): RepoLine | null {
+  const m = /^([^:]+\.md): (.*) \(via (?:Mail|Telegram)\)$/.exec(message);
+  if (!m) return null;
+  const [, file, short] = m;
+  const strip = (l: string) => l.replace(/^- (\[ \] )?/, "");
+  return lines.find((l) => l.file === file && strip(l.line).startsWith(short.trim())) ?? null;
+}
+
+export function newsLines(items: string[], lines: RepoLine[]): string[] {
   const mail = items.filter((m) => m.endsWith("(via Mail)")).length;
-  const tg = items.length - mail;
-  const counts = [mail ? `${mail} per Mail` : "", tg ? `${tg} per Telegram` : ""].filter(Boolean).join(", ");
-  const shown = items.slice(0, 6).map((m) => `- ${m.replace(/^[^:]+\.md: /, "").replace(/ \(via (Mail|Telegram)\)$/, "").trim()}`);
-  const more = items.length > 6 ? [`- … und ${items.length - 6} weitere (am Mac: git log)`] : [];
-  return [`${items.length} neue Einträge (${counts}):`, ...shown, ...more];
+  const counts = [mail ? `${mail} per Mail` : "", items.length - mail ? `${items.length - mail} per Telegram` : ""].filter(Boolean).join(", ");
+  const found = items.map((m) => resolve(m, lines)).filter((x): x is RepoLine => x !== null);
+  const todos = new Map<string, string>();
+  const docs: string[] = [];
+  let inbox = 0;
+  let questions = 0;
+  for (const f of found) {
+    if (/ – Drive: https:/.test(f.line)) docs.push(f.line.replace(/^- /, "").split(" – Drive:")[0]);
+    else if (f.line.startsWith("- [ ] ")) {
+      const c = core(f.line);
+      const key = c.text.toLowerCase().replace(/[^a-zäöüß0-9]/g, "").slice(0, 30);
+      const prio = /\b(kritisch|dringend|standard)\b/.exec(f.line)?.[1];
+      const area = c.where || (f.file.startsWith("bereiche/") ? f.file.replace(/^bereiche\/|\.md$/g, "") : "Eingang");
+      if (!todos.has(key)) todos.set(key, `- ${c.text}${prio ? ` · ${prio}` : ""} (${area})`);
+    } else if (f.file === "docs/eingang.md" && !/versuchte Einflussnahme/.test(f.line)) {
+      inbox++;
+      if (f.line.startsWith("- [?]")) questions++;
+    }
+  }
+  const out = [`${items.length} neue Einträge (${counts})`];
+  if (todos.size) out.push(`To-dos (${todos.size}):`, ...[...todos.values()].slice(0, 8), ...(todos.size > 8 ? [`- … und ${todos.size - 8} weitere`] : []));
+  if (docs.length) out.push(`In Drive (${docs.length}): ${docs.slice(0, 3).join("; ")}${docs.length > 3 ? " …" : ""}`);
+  if (inbox) out.push(`Eingangskorb: ${inbox} neu${questions ? `, davon ${questions} Rückfragen [?]` : ""} → Triage`);
+  return out;
 }
 
 function findingLine(f: string): string {
@@ -214,7 +247,11 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
   add("Heute fällig", dedupe(due.heute).map((l) => item(l, false)));
   add("Überfällig (kritisch)", dedupe(due.ueberfaellig).map((l) => item(l, true)));
   add("Fristen nächste 7 Tage", dedupe(due.bald).map((l) => item(l, true)));
-  add("Neu eingegangen", items.length ? newsLines(items) : []);
+  const repoLines: RepoLine[] = paths.flatMap((p, i) => {
+    const f = files[i];
+    return f.ok ? f.text.split("\n").filter((l) => l.startsWith("- ")).map((line) => ({ file: p, line: line.trim() })) : [];
+  });
+  add("Neu eingegangen", items.length ? newsLines(items, repoLines) : []);
   add("Auffälligkeiten", findings.map(findingLine));
   if (unreadable.length) blocks.push(`(Nicht lesbar: ${unreadable.join(", ")})`);
 
