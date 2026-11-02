@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Schritt 6: Google-Freigabe für das Workspace-Konto holen und als Secrets ablegen.
 // Client-ID und -Secret werden verdeckt abgefragt; das Refresh-Token geht direkt an wrangler und wird nie angezeigt.
-// Legt außerdem den Drive-Ordner „Assistent-Ablage“ an und gibt dessen ID aus (keine geheime Angabe).
+// Legt außerdem den Drive-Ordner „Assistent-Ablage“ an, falls noch keiner eingetragen ist (ID ist keine geheime Angabe).
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -104,18 +104,25 @@ const cal = await fetch("https://www.googleapis.com/calendar/v3/calendars/primar
 const calInfo = await cal.json();
 console.log(cal.ok ? `→ Kalender erreichbar: Zeitzone ${calInfo.timeZone}` : `Kalender nicht erreichbar (HTTP ${cal.status})`);
 
-const folder = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
-  method: "POST",
-  headers: { ...auth, "Content-Type": "application/json" },
-  body: JSON.stringify({ name: "Assistent-Ablage", mimeType: "application/vnd.google-apps.folder" }),
-});
-const folderInfo = await folder.json();
-if (!folder.ok) {
-  console.error(`Ablage-Ordner nicht angelegt (HTTP ${folder.status}).`);
-  process.exit(1);
-}
+// Vorhandene Ablage behalten: Ein Neuanmelden (z. B. für neue Rechte) darf keinen zweiten Ordner anlegen.
 const tomlPath = new URL("../wrangler.toml", import.meta.url);
 const toml = readFileSync(tomlPath, "utf8");
-writeFileSync(tomlPath, toml.replace(/^DRIVE_ROOT_ID = "[^"]*".*$/m, `DRIVE_ROOT_ID = "${folderInfo.id}"`));
-console.log("→ Drive-Ordner „Assistent-Ablage“ angelegt, ID in wrangler.toml eingetragen.");
+const existing = /^DRIVE_ROOT_ID = "([^"]+)"/m.exec(toml)?.[1];
+const check = existing ? await fetch(`https://www.googleapis.com/drive/v3/files/${existing}?fields=id,trashed`, { headers: auth }) : null;
+if (check?.ok && !(await check.json()).trashed) {
+  console.log("→ Drive-Ordner „Assistent-Ablage“ vorhanden, bleibt.");
+} else {
+  const folder = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+    method: "POST",
+    headers: { ...auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Assistent-Ablage", mimeType: "application/vnd.google-apps.folder" }),
+  });
+  const folderInfo = await folder.json();
+  if (!folder.ok) {
+    console.error(`Ablage-Ordner nicht angelegt (HTTP ${folder.status}).`);
+    process.exit(1);
+  }
+  writeFileSync(tomlPath, toml.replace(/^DRIVE_ROOT_ID = "[^"]*".*$/m, `DRIVE_ROOT_ID = "${folderInfo.id}"`));
+  console.log("→ Drive-Ordner „Assistent-Ablage“ angelegt, ID in wrangler.toml eingetragen.");
+}
 console.log("Fertig. Sag Claude Bescheid – der Bot wird dann neu veröffentlicht.");
