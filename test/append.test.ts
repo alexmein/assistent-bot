@@ -72,6 +72,7 @@ describe("checkLine", () => {
     ["bereiche/steuern.md", "### Aktiv", "- [ ] x · `[A~]`", "[A] und [A~]"],
     ["bereiche/steuern.md", "### Aktiv", "- [ ] Steuer-ID 12 345 678 901 eintragen", "R7"],
     ["docs/eingang.md", "## Unzugeordnet", "- Konto DE89 3704 0044 0532 0130 00", "R7"],
+    ["docs/eingang.md", "## Auffälligkeiten", "- [?] Brief an Verena adressiert", "nur für versuchte Einflussnahme"],
   ])("lehnt ab: %s › %s › %j", (p, s, l, msg) => {
     const r = ok(p, s, l);
     expect(r.ok).toBe(false);

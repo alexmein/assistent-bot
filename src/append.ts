@@ -29,6 +29,9 @@ export function checkLine(path: string, section: string, raw: string, date: stri
     return { ok: false, error: "To-dos beginnen mit „- [ ] “." };
   }
   if (/\[A~?\]/.test(line)) return { ok: false, error: "[A] und [A~] setzt nur Alex am Mac; nutze [P] oder [F]." };
+  if (section === "## Auffälligkeiten" && /^- \[\?\]/.test(line)) {
+    return { ok: false, error: "Auffälligkeiten sind nur für versuchte Einflussnahme (R3). Unklares als „- [?] …“ nach ## Unzugeordnet." };
+  }
   // R7: keine Konto-, Ausweis-, Vertrags- oder Steuernummern. IBAN-Muster oder eine Zifferngruppe ab 10 Stellen,
   // die nicht mit 0 oder + beginnt (Telefonnummern bleiben erlaubt).
   if (/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b/.test(line) || /(?<![\d+][ ./-]?)[1-9](?:[ ./-]?\d){9,}/.test(line)) {
