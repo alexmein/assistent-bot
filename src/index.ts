@@ -7,9 +7,10 @@ import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { buildBriefing, fetchWeather } from "./briefing";
 import { commitMessagesSince, readRepoFile, writeTriageFile } from "./github";
-import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
+import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listEvents, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 import { sendDue } from "./reminders";
+import { research, UMFELD_KEY, type Ereignis } from "./umfeld";
 import { critical, notice, prepareTriage, renderTriage, telegramLine, type Vorbereitung } from "./triage";
 import { berlin, hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
@@ -73,6 +74,7 @@ export default {
       await sendDue(env.STATE, now, (text) => sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text));
       await runDue(jobs(env), now, env.STATE);
       if (env.ANTHROPIC_API_KEY && env.GITHUB_TOKEN) await requestedTriage(env);
+      if (env.ANTHROPIC_API_KEY) await requestedUmfeld(env);
     } else console.log("Zeitpläne aus: KV STATE oder ALLOWED_CHAT_ID fehlt");
     if (now.getUTCMinutes() % 15 !== 0) return;
     const reason = mailNotReady(env);
@@ -87,17 +89,23 @@ export default {
 function jobs(env: Env): Job[] {
   const list: Job[] = [];
   if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.STATE) {
-    // Dienstags kommt bis Schritt 5 (Wochenbriefing) ebenfalls das Tagesbriefing.
+    // Dienstags ersetzt das Wochenbriefing das Tagesbriefing (Entscheidung 26).
+    const send = (weekly: boolean) => async () => {
+      const started = new Date().toISOString();
+      const text = await briefing(env, (await env.STATE!.get(LAST_BRIEFING)) ?? hoursAgo(24), weekly);
+      await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, truncate(text, TELEGRAM_MAX));
+      await env.STATE!.put(LAST_BRIEFING, started); // erst nach dem Versand: sonst fehlt Neues im nächsten Briefing
+    };
     list.push({
       name: "tagesbriefing",
-      at: (day) => (day === "Sat" || day === "Sun" ? hm(10, 30) : hm(8, 30)),
-      run: async () => {
-        const started = new Date().toISOString();
-        const text = await briefing(env, (await env.STATE!.get(LAST_BRIEFING)) ?? hoursAgo(24));
-        await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, truncate(text, TELEGRAM_MAX));
-        await env.STATE!.put(LAST_BRIEFING, started); // erst nach dem Versand: sonst fehlt Neues im nächsten Briefing
-      },
+      at: (day) => (day === "Tue" ? null : day === "Sat" || day === "Sun" ? hm(10, 30) : hm(8, 30)),
+      run: send(false),
     });
+    list.push({ name: "wochenbriefing", at: (day) => (day === "Tue" ? hm(8, 30) : null), run: send(true) });
+  }
+  if (env.ANTHROPIC_API_KEY && env.STATE) {
+    // Umfeld-Recherche vor dem Wochenbriefing; schickt nichts, darf also in der Ruhezeit laufen.
+    list.push({ name: "umfeld", at: (day) => (day === "Tue" ? hm(7, 30) : null), ignoresQuiet: true, run: async () => void (await umfeld(env)) });
   }
   if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.ANTHROPIC_API_KEY && env.STATE) {
     list.push({
@@ -127,6 +135,18 @@ function jobs(env: Env): Job[] {
 const LAST_BRIEFING = "briefing:last";
 const TRIAGE_REQUESTED = "triage:requested";
 const TRIAGE_CRITICAL = "triage:critical"; // fristkritische Punkte der letzten Vorbereitung
+
+async function requestedUmfeld(env: Env): Promise<void> {
+  if (!(await env.STATE!.get(UMFELD_REQUESTED))) return;
+  await env.STATE!.delete(UMFELD_REQUESTED);
+  let text: string;
+  try {
+    text = `Umfeld-Recherche fertig: ${await umfeld(env)} Ereignisse. /woche zeigt sie.`;
+  } catch (e) {
+    text = `Umfeld-Recherche fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+  }
+  await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text);
+}
 
 async function requestedTriage(env: Env): Promise<void> {
   if (!(await env.STATE!.get(TRIAGE_REQUESTED))) return;
@@ -166,16 +186,28 @@ function hoursAgo(h: number): string {
   return new Date(Date.now() - h * 3600_000).toISOString();
 }
 
-function briefing(env: Env, sinceIso: string): Promise<string> {
+function briefing(env: Env, sinceIso: string, weekly = false): Promise<string> {
   return buildBriefing(
     {
       readFile: (path) => readRepoFile(env, path),
       commitsSince: (iso) => commitMessagesSince(env, iso),
       weather: () => fetchWeather(),
+      umfeld: async () => (await env.STATE?.get<Ereignis[]>(UMFELD_KEY, "json")) ?? [],
+      ...(googleReady(env) ? { calendar: (from: string, to: string) => listEvents(env, from, to) } : {}),
       now: () => new Date(),
     },
     sinceIso,
+    weekly,
   );
+}
+
+const UMFELD_REQUESTED = "umfeld:requested";
+
+async function umfeld(env: Env): Promise<number> {
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
+  const list = await research(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 240_000 }), today);
+  await env.STATE!.put(UMFELD_KEY, JSON.stringify(list), { expirationTtl: 21 * 86_400 });
+  return list.length;
 }
 
 function mailNotReady(env: Env): string | null {
@@ -226,7 +258,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /triage – Triage jetzt vorbereiten (sonst Montag 8:45). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /triage – Triage jetzt vorbereiten (sonst Mo–Fr 8:45). /woche – Wochenbriefing jetzt (Vorschau). /umfeld – Umfeld-Recherche jetzt (sonst Di 7:30). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -244,6 +276,20 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     } catch (e) {
       return `Briefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }
+  }
+  if (command === "/woche") {
+    // Vorschau des Wochenbriefings; zählt nicht als Briefing.
+    await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
+    try {
+      return truncate(await briefing(env, (await env.STATE?.get(LAST_BRIEFING)) ?? hoursAgo(24), true), TELEGRAM_MAX);
+    } catch (e) {
+      return `Wochenbriefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+    }
+  }
+  if (command === "/umfeld") {
+    if (!env.ANTHROPIC_API_KEY || !env.STATE) return "Für die Recherche fehlen Zugänge.";
+    await env.STATE.put(UMFELD_REQUESTED, "1", { expirationTtl: 3600 });
+    return "Umfeld-Recherche läuft – Meldung in den nächsten Minuten.";
   }
   if (command === "/triage") {
     // Vorbereitung jetzt (z. B. vor einer Triage außer der Reihe); schreibt die Datei für heute.

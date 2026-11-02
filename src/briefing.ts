@@ -3,6 +3,8 @@
 // ersten Test ganze Abschnitte weggelassen; eine Liste braucht kein Urteil, und so kann nichts fehlen oder erfunden sein (R2).
 
 import type { FileResult } from "./github";
+import type { CalendarItem } from "./google";
+import { dayLines, weekLines, type Ereignis } from "./umfeld";
 import { calendarLines, periodsFor } from "./kalender";
 import { BEREICHE } from "./mail";
 
@@ -273,16 +275,24 @@ export interface BriefingDeps {
   readFile: (path: string) => Promise<FileResult>;
   commitsSince: (iso: string) => Promise<string[]>; // Commit-Nachrichten
   weather: () => Promise<string>;
+  umfeld?: () => Promise<Ereignis[]>; // letzte Recherche (KV)
+  calendar?: (fromIso: string, toIso: string) => Promise<CalendarItem[]>; // nur Wochenbriefing
   now: () => Date;
 }
 
-export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promise<string> {
+// Dienstags ersetzt das Wochenbriefing das Tagesbriefing (Entscheidung 26): gleicher Inhalt plus Woche voraus, Umfeld
+// der Woche, Stand der Triage und Selbstkontrolle.
+export async function buildBriefing(deps: BriefingDeps, sinceIso: string, weekly = false): Promise<string> {
   const today = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const paths = ["docs/status.md", "docs/eingang.md", ...BEREICHE.map((b) => `bereiche/${b}.md`)];
-  const [weather, commits, kalender, ...files] = await Promise.all([
+  const weekAgo = new Date(deps.now().getTime() - 7 * 86_400_000).toISOString();
+  const [weather, commits, kalender, umfeld, week, triageFile, ...files] = await Promise.all([
     deps.weather(),
     deps.commitsSince(sinceIso),
     deps.readFile("docs/kalender.md"),
+    deps.umfeld ? deps.umfeld().catch(() => null) : Promise.resolve(null),
+    weekly ? weekData(deps, today, weekAgo) : Promise.resolve(null),
+    weekly ? deps.readFile(`triage/${addDays(today, -1)}.md`) : Promise.resolve(null),
     ...paths.map((p) => deps.readFile(p)),
   ]);
 
@@ -296,7 +306,10 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
 
   const blocks: string[] = [];
   const add = (title: string, lines: string[]) => lines.length && blocks.push([title, ...lines].join("\n"));
+  if (week) add("Woche voraus: Termine", week.termine);
   add("Feiertage und Ferien", calendarLines(today, periodsFor(today, kalender.ok ? kalender.text : "")));
+  if (umfeld) add(weekly ? "Umfeld diese Woche" : "Umfeld heute/morgen", weekly ? weekLines(umfeld, today) : dayLines(umfeld, today));
+  else if (weekly) blocks.push("Umfeld diese Woche\n- Recherche nicht verfügbar.");
   add("Heute fällig", dedupe(due.heute).map((l) => item(l, false)));
   add("Überfällig (kritisch)", dedupe(due.ueberfaellig).map((l) => item(l, true)));
   add("Fristen nächste 7 Tage", dedupe(due.bald).map((l) => item(l, true)));
@@ -309,7 +322,53 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
   add("Auffälligkeiten", findings.map(findingLine));
   if (unreadable.length) blocks.push(`(Nicht lesbar: ${unreadable.join(", ")})`);
 
+  if (week) {
+    add("Triage", triageLines(triageFile, week.commits));
+    add("Selbstkontrolle (7 Tage)", selfCheck(week.commits, repoLines));
+  }
   if (!kalender.ok) blocks.push("(Nicht lesbar: docs/kalender.md)");
-  const head = `${shortDate(today)}\n${weather}`;
+  const head = weekly ? `Wochenbriefing KW ${isoWeek(today)} · ${shortDate(today)}–${shortDate(addDays(today, 6))}\n${weather}` : `${shortDate(today)}\n${weather}`;
   return blocks.length ? `${head}\n\n${blocks.join("\n\n")}` : `${head}\nNichts Neues.`;
+}
+
+// ---------- Wochenbriefing ----------
+
+async function weekData(deps: BriefingDeps, today: string, weekAgo: string): Promise<{ termine: string[]; commits: string[] }> {
+  const [commits, items] = await Promise.all([
+    deps.commitsSince(weekAgo),
+    deps.calendar ? deps.calendar(new Date(`${today}T00:00:00Z`).toISOString(), new Date(`${addDays(today, 8)}T00:00:00Z`).toISOString()).catch(() => null) : null,
+  ]);
+  const termine = items === null ? ["- Kalender gerade nicht lesbar."] : items.filter((i) => i.date >= today && i.date <= addDays(today, 7)).map((i) => `- ${shortDate(i.date)}${i.time ? ` ${i.time}` : ""}: ${i.title}`);
+  return { termine, commits };
+}
+
+export function isoWeek(date: string): number {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // Donnerstag derselben Woche
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1, 12));
+  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+}
+
+// Basis Montags-Triage: Wurde sie gemacht (Commit „triage …“ vom Mac), und was lag vor?
+export function triageLines(file: FileResult | null, weekCommits: string[]): string[] {
+  const done = weekCommits.some((m) => /^triage \d{4}-\d{2}-\d{2}/i.test(m.split("\n")[0]));
+  const text = file && file.ok ? file.text : "";
+  const points = (text.match(/^\d+\. /gm) ?? []).length;
+  const critical = (text.match(/^\d+\. ⚠/gm) ?? []).length;
+  const prep = text ? `Vorbereitung Montag: ${points} Punkte, davon ${critical} fristkritisch.` : "Keine Vorbereitung vom Montag gefunden.";
+  return [`- ${done ? "Triage diese Woche gemacht." : "Triage diese Woche noch nicht gemacht."} ${prep}`];
+}
+
+// Selbstkontrolle aus den Commits der Woche: was kam rein, was ist gescheitert, was war auffällig.
+export function selfCheck(weekCommits: string[], lines: RepoLine[]): string[] {
+  const items = newItems(weekCommits);
+  const tg = items.filter((m) => m.endsWith("(via Telegram)")).length;
+  const mail = items.length - tg;
+  const found = items.map((m) => resolve(m, lines)).filter((x): x is RepoLine => x !== null);
+  const failed = found.filter((f) => /nicht abgelegt|nicht ausgewertet|nicht in Drive abgelegt/.test(f.line)).length;
+  const suspicious = found.filter((f) => /versuchte Einflussnahme/.test(f.line)).length;
+  return [
+    `- ${tg} Einträge per Telegram, ${mail} per Mail.`,
+    `- ${failed ? `${failed} Ablagen gescheitert (Hinweis im Eingangskorb).` : "Keine gescheiterten Ablagen."} ${suspicious ? `${suspicious} versuchte Einflussnahmen gemeldet.` : "Keine Einflussnahme."}`,
+  ];
 }

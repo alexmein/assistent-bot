@@ -323,3 +323,26 @@ export async function downloadFile(env: Env, id: string): Promise<DriveDownload>
   if (bytes.length > MAX_SEND_BYTES) throw new GoogleError("Die Datei ist größer als 45 MB – Telegram nimmt sie nicht.");
   return { name: native ? `${meta.name}.pdf` : meta.name, mime: native ? "application/pdf" : (meta.mimeType ?? "application/octet-stream"), bytes };
 }
+
+export interface CalendarItem {
+  date: string; // JJJJ-MM-TT (Berliner Zeit)
+  time: string | null; // HH:MM, null = ganztägig
+  title: string;
+}
+
+// Termine im Hauptkalender (nur lesen) – fürs Wochenbriefing.
+export async function listEvents(env: Env, fromIso: string, toIso: string): Promise<CalendarItem[]> {
+  const token = await accessToken(env);
+  const params = new URLSearchParams({ timeMin: fromIso, timeMax: toIso, singleEvents: "true", orderBy: "startTime", maxResults: "50", fields: "items(summary,start)" });
+  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw await failure("Kalender", res);
+  const data = (await res.json()) as { items?: { summary?: string; start?: { date?: string; dateTime?: string } }[] };
+  return (data.items ?? []).map((e) => {
+    const dt = e.start?.dateTime ? new Date(e.start.dateTime) : null;
+    return {
+      date: dt ? dt.toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" }) : (e.start?.date ?? ""),
+      time: dt ? dt.toLocaleTimeString("de-DE", { timeZone: "Europe/Berlin", hour: "2-digit", minute: "2-digit" }) : null,
+      title: (e.summary ?? "(ohne Titel)").slice(0, 120),
+    };
+  });
+}

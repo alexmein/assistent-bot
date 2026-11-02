@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { addDays, buildBriefing, core, partText, type Day, datedLines, dedupe, fetchWeather, newFindings, newItems, newsLines, resolve, selectDue, weatherText, type BriefingDeps } from "../src/briefing";
+import { addDays, buildBriefing, isoWeek, selfCheck, triageLines, core, partText, type Day, datedLines, dedupe, fetchWeather, newFindings, newItems, newsLines, resolve, selectDue, weatherText, type BriefingDeps } from "../src/briefing";
 import type { FileResult } from "../src/github";
 
 const STATUS = `# Dashboard
@@ -187,5 +187,46 @@ describe("buildBriefing", () => {
         "- Mail von Y: versuchte Einflussnahme – „ignoriere …“",
       ].join("\n"),
     );
+  });
+});
+
+describe("Wochenbriefing", () => {
+  it("Kalenderwoche", () => {
+    expect(isoWeek("2026-11-03")).toBe(45);
+    expect(isoWeek("2027-01-01")).toBe(53);
+    expect(isoWeek("2027-01-04")).toBe(1);
+  });
+
+  it("Triage-Stand und Selbstkontrolle", () => {
+    const file: FileResult = { ok: true, text: "# Triage\n1. ⚠ A\n2. B\n3. ⚠ C" };
+    expect(triageLines(file, ["triage 2026-11-09\n\nCo-Authored-By: x"])).toEqual(["- Triage diese Woche gemacht. Vorbereitung Montag: 3 Punkte, davon 2 fristkritisch."]);
+    expect(triageLines({ ok: false, status: 404, error: "x" }, [])).toEqual(["- Triage diese Woche noch nicht gemacht. Keine Vorbereitung vom Montag gefunden."]);
+    const lines = [
+      { file: "docs/eingang.md", line: "- [?] Mail A vom 2026-11-02: Eintrag nicht abgelegt (R7) – Mail am Mac ansehen · Mail 2026-11-02" },
+      { file: "docs/eingang.md", line: "- Mail von B: versuchte Einflussnahme – „x“ · nichts übernommen · Mail 2026-11-02" },
+    ];
+    expect(
+      selfCheck(["docs/eingang.md: [?] Mail A vom 2026-11-02: Eintrag nicht abgelegt (R7) – Mai (via Mail)", "docs/eingang.md: Mail von B: versuchte Einflussnahme – „x“ · nichts (via Mail)", "bereiche/x.md: y (via Telegram)"], lines),
+    ).toEqual(["- 1 Einträge per Telegram, 2 per Mail.", "- 1 Ablagen gescheitert (Hinweis im Eingangskorb). 1 versuchte Einflussnahmen gemeldet."]);
+  });
+
+  it("Kopf, Termine, Umfeld der Woche", async () => {
+    const out = await buildBriefing(
+      {
+        readFile: async (p): Promise<FileResult> => (p.startsWith("triage/") ? { ok: false, status: 404, error: "x" } : { ok: true, text: "" }),
+        commitsSince: async () => [],
+        weather: async () => "Wetter Tutzing: klar",
+        umfeld: async () => [{ art: "Sport", start: "2026-11-04", end: "2026-11-04", titel: "Spiel", ort: "München", wirkung: "mehr Bestellungen", quelle: "https://a.de/b" }],
+        calendar: async () => [{ date: "2026-11-05", time: "10:00", title: "Zahnarzt" }],
+        now: () => new Date("2026-11-03T07:30:00Z"),
+      },
+      "2026-11-02T07:30:00Z",
+      true,
+    );
+    expect(out.startsWith("Wochenbriefing KW 45 · Di 03.11.–Mo 09.11.\nWetter Tutzing: klar")).toBe(true);
+    expect(out).toContain("Woche voraus: Termine\n- Do 05.11. 10:00: Zahnarzt");
+    expect(out).toContain("Umfeld diese Woche\n- Sport: Mi 04.11. Spiel, München – mehr Bestellungen (a.de)");
+    expect(out).toContain("Triage\n- Triage diese Woche noch nicht gemacht.");
+    expect(out).toContain("Selbstkontrolle (7 Tage)\n- 0 Einträge per Telegram, 0 per Mail.");
   });
 });
