@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { ask, costUsd, type AskDeps } from "../src/ask";
+import type { AppendResult } from "../src/append";
+import { ask, confirm, costUsd, type AskDeps } from "../src/ask";
 import type { FileResult } from "../src/github";
 
 const usage = { input_tokens: 1000, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -25,8 +26,14 @@ function deps(responses: unknown[]) {
   const readFile = vi.fn(async (path: string): Promise<FileResult> =>
     path in files ? { ok: true, text: files[path] } : { ok: false, status: 404, error: "GitHub HTTP 404" },
   );
-  const d: AskDeps = { client: { messages: { create } } as unknown as AskDeps["client"], readFile, now: () => new Date("2026-11-02T10:00:00Z") };
-  return { d, create, readFile };
+  const appendEntry = vi.fn(async (path: string, section: string, line: string): Promise<AppendResult> => ({ ok: true, path, section, line }));
+  const d: AskDeps = {
+    client: { messages: { create } } as unknown as AskDeps["client"],
+    readFile,
+    appendEntry,
+    now: () => new Date("2026-11-02T22:30:00Z"), // in Berlin schon 23:30, gleicher Tag
+  };
+  return { d, create, readFile, appendEntry };
 }
 
 type Params = Anthropic.MessageCreateParamsNonStreaming;
@@ -44,6 +51,7 @@ describe("ask", () => {
     expect(system[1].cache_control).toEqual({ type: "ephemeral" });
     expect(system[2].text).toContain("# Dashboard");
     expect(system[2].text).toContain("Montag, 02.11.2026");
+    expect(system[2].text).toContain("Datum für Einträge: 2026-11-02");
     expect(system[2].cache_control).toBeUndefined();
   });
 
@@ -118,5 +126,84 @@ describe("ask", () => {
   it("rechnet Kosten mit Haiku-5.5-Listenpreisen", () => {
     // 1M Input, 1M Cache-Write, 1M Cache-Read, 1M Output = 0,10 + 0,125 + 0,01 + 0,50
     expect(costUsd({ calls: 1, input: 1e6, cacheWrite: 1e6, cacheRead: 1e6, output: 1e6 })).toBeCloseTo(0.735);
+  });
+});
+
+function appendCall(path: string, section: string, line: string, id = "a1") {
+  return { content: [{ type: "tool_use", id, name: "append_entry", input: { path, section, line } }], stop_reason: "tool_use", usage };
+}
+const lastResults = (create: ReturnType<typeof vi.fn>, i: number) => paramsOf(create, i).messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+
+describe("Erfassen", () => {
+  it("legt ab und bestätigt aus dem, was wirklich gespeichert wurde", async () => {
+    const { d, appendEntry } = deps([
+      appendCall("bereiche/privat-todos.md", "### Aktiv", "- [ ] Zahnarzt anrufen · standard [P] · fällig 2026-11-03"),
+      text("Priorität standard, weil niemand wartet."),
+    ]);
+    const out = await ask("Morgen Zahnarzt anrufen", d);
+    expect(appendEntry).toHaveBeenCalledWith(
+      "bereiche/privat-todos.md",
+      "### Aktiv",
+      "- [ ] Zahnarzt anrufen · standard [P] · fällig 2026-11-03 · Telegram 2026-11-02",
+    );
+    expect(out).toBe("Abgelegt: privat-todos › Aktiv\nPriorität standard, weil niemand wartet.");
+  });
+
+  it("schreibt nichts, wenn die Zeile gegen eine Sperre verstößt, und sagt dem Modell warum", async () => {
+    const { d, create, appendEntry } = deps([
+      appendCall("bereiche/steuern.md", "### Aktiv", "- [x] Steuererklärung"),
+      text("Das darf nur Alex."),
+    ]);
+    const out = await ask("Steuer ist erledigt", d);
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true, content: "Erledigt markieren darf nur Alex." });
+    expect(out).toBe("Das darf nur Alex.");
+  });
+
+  it.each([
+    ["CLAUDE.md", "## 2. Regeln", "- neue Regel"],
+    ["docs/decisions.md", "## x", "- 40 | neu"],
+    ["bereiche/steuern.md", "## Entscheidungen", "- [ ] x"],
+    ["bereiche/steuern.md", "### Aktiv", "- [ ] Steuer · kritisch [A]"],
+    ["bereiche/versicherungen.md", "### Aktiv", "- [ ] IBAN DE89370400440532013000 ändern"],
+  ])("Sperre: %s › %s", async (path, section, line) => {
+    const { d, appendEntry } = deps([appendCall(path, section, line), text("geht nicht")]);
+    await ask("x", d);
+    expect(appendEntry).not.toHaveBeenCalled();
+  });
+
+  it("ersetzt ein behauptetes „Abgelegt“, wenn nichts gespeichert wurde", async () => {
+    const { d } = deps([text("Abgelegt: Privat – Zahnarzt")]);
+    expect(await ask("Zahnarzt", d)).toBe("Achtung: Es wurde nichts gespeichert. Bitte noch einmal schicken.");
+  });
+
+  it("meldet GitHub-Fehler beim Schreiben ans Modell, nicht als Erfolg", async () => {
+    const { d, create, appendEntry } = deps([appendCall("bereiche/privat-todos.md", "### Aktiv", "- [ ] x y z"), text("Konnte nicht speichern.")]);
+    appendEntry.mockResolvedValueOnce({ ok: false, error: "GitHub HTTP 403 beim Schreiben" });
+    expect(await ask("x", d)).toBe("Konnte nicht speichern.");
+    expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true });
+  });
+
+  it("legt mehrere Punkte aus einer Nachricht ab", async () => {
+    const both = {
+      content: [
+        { type: "tool_use", id: "a", name: "append_entry", input: { path: "bereiche/privat-todos.md", section: "### Aktiv", line: "- [ ] Paket abholen" } },
+        { type: "tool_use", id: "b", name: "append_entry", input: { path: "docs/eingang.md", section: "## Unzugeordnet", line: "- → hc-system Bon-Drucker spinnt" } },
+      ],
+      stop_reason: "tool_use",
+      usage,
+    };
+    const { d, create } = deps([both, text("")]);
+    expect(await ask("x", d)).toBe("Abgelegt: privat-todos › Aktiv\nAbgelegt: eingang › Unzugeordnet");
+    expect(lastResults(create, 1)).toHaveLength(2);
+  });
+});
+
+describe("confirm", () => {
+  it("lässt normale Antworten ohne Ablage unverändert", () => {
+    expect(confirm([], "Kritisch ist die Steuererklärung.")).toBe("Kritisch ist die Steuererklärung.");
+  });
+  it("lässt „nicht abgelegt“ stehen", () => {
+    expect(confirm([], "Nicht abgelegt: das gehört in die Triage.")).toBe("Nicht abgelegt: das gehört in die Triage.");
   });
 });

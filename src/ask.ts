@@ -1,6 +1,8 @@
-// Kleine Fragen mit Claude Haiku 5.5. Nur lesend: das einzige Werkzeug ist read_file auf erlaubte Repo-Pfade.
+// Kleine Fragen und Erfassen mit Claude Haiku 5.5. Werkzeuge: read_file (erlaubte Repo-Pfade) und append_entry
+// (nur Anhängen, Sperren in append.ts).
 
 import Anthropic from "@anthropic-ai/sdk";
+import { appendEntry, checkLine, type AppendResult } from "./append";
 import type { Env } from "./env";
 import { readRepoFile, type FileResult } from "./github";
 
@@ -16,7 +18,20 @@ const ALLOWED_PATH = /^(CLAUDE\.md|(docs|bereiche|monitor|archiv)\/[a-z0-9][a-z0
 
 const INSTRUCTIONS = `Du bist der Telegram-Zugang von Alex' persönlichem Assistenten. Verbindlich sind die Regeln in CLAUDE.md (folgt unten).
 
-In diesem Ausbauschritt beantwortest du nur kleine Fragen und liest dafür Dateien aus dem Repo. Du kannst noch nichts erfassen, ändern, eintragen oder erinnern. Will Alex etwas erfassen, sag in einem Satz, dass das mit dem nächsten Ausbauschritt kommt – behaupte nie, etwas abgelegt zu haben.
+Du beantwortest kleine Fragen (read_file) und erfasst, was Alex dir schickt (append_entry).
+
+Erfassen (CLAUDE.md §1 Routing, §2 Autonomie, §4):
+- Jede Nachricht, die eine Aufgabe, Frist, Info oder Idee enthält, wird ohne Rückfrage abgelegt. Mehrere Punkte → mehrere append_entry.
+- To-do in den passenden Bereich, Abschnitt „### Aktiv“ (bzw. „### Wartet auf andere“ mit wer/seit wann, „### Geparkt“ wenn Alex parkt).
+  Format: „- [ ] <Text> · <prio> [P] · fällig JJJJ-MM-TT · Telegram JJJJ-MM-TT“. Priorität nach Entscheidung 30 inhaltlich vorschlagen, immer als [P]. „fällig“ nur, wenn Alex ein Datum nennt; relative Angaben („morgen“, „Freitag“) in ein Datum umrechnen.
+- Kritisch oder dringend zusätzlich als Zeile in docs/status.md › „## Kritisch / dringend“; eine Frist ≤ 30 Tage zusätzlich in „## Fristen (nächste 30 Tage)“.
+- Infos ohne Aufgabe und alles Unzuordenbare → docs/eingang.md › „## Unzugeordnet“ als „- <Text> · Telegram JJJJ-MM-TT“.
+- HC-Tech (hc-system, hc-kitchen, hc-orders, hc-shopify, Kita-Bestellsystem) → docs/eingang.md › „## Unzugeordnet“ mit „→ hc-system“ am Anfang des Textes.
+- Neues Thema, für das kein Bereich passt → zusätzlich docs/eingang.md › „## Vorschläge für neue Bereiche“ als „- [P] Bereich <name>: <Grund>“.
+- Will Alex etwas erledigen, ändern, umformulieren, verschieben oder löschen: nicht möglich – sag, dass das in die Triage am Mac gehört, und lege es als Zeile in docs/status.md › „## → am Mac“ ab.
+- Keine Konto-, Ausweis-, Vertrags- oder Steuernummern, keine Passwörter, keine Beträge aus Kontoauszügen (R7).
+- Erinnerungen per Push und Kalendereinträge kann der Bot noch nicht; die Frist steht im To-do.
+- Die Bestätigung „Abgelegt: …“ erzeugt das Programm selbst aus dem, was wirklich gespeichert wurde. Schreib nach dem Ablegen höchstens einen kurzen Zusatz (z. B. Begründung der Priorität) oder nichts. Schreib nie „abgelegt“, wenn append_entry nicht erfolgreich war.
 
 - Deutsch, kurz, in einer Minute lesbar. Kein Markdown (Telegram zeigt es roh); einfache Aufzählungen mit „-“ sind ok.
 - Fakten nur aus den Repo-Dateien (R2) und mit Quelle (Dateiname). Steht es nicht drin: „steht nicht im Repo“. Nie Zahlen, Fristen oder Namen erfinden.
@@ -37,11 +52,27 @@ const TOOLS: Anthropic.Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "append_entry",
+    description:
+      "Hängt genau eine Zeile am Ende eines Abschnitts an. Ändern, Verschieben, Löschen ist nicht möglich. Erlaubt: bereiche/<name>.md mit „### Aktiv“, „### Wartet auf andere“, „### Geparkt“; docs/eingang.md mit „## Unzugeordnet“, „## Vorschläge für neue Bereiche“, „## Auffälligkeiten“; docs/status.md mit „## Kritisch / dringend“, „## Fristen (nächste 30 Tage)“, „## → am Mac“.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "z. B. bereiche/privat-todos.md" },
+        section: { type: "string", description: "Überschrift exakt, z. B. ### Aktiv" },
+        line: { type: "string", description: "Eine Zeile, beginnt mit „- “ (To-dos mit „- [ ] “)" },
+      },
+      required: ["path", "section", "line"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export interface AskDeps {
   client: Pick<Anthropic, "messages">;
   readFile: (path: string) => Promise<FileResult>;
+  appendEntry: (path: string, section: string, line: string) => Promise<AppendResult>;
   now: () => Date;
 }
 
@@ -49,6 +80,7 @@ export function defaultDeps(env: Env): AskDeps {
   return {
     client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
     readFile: (path) => readRepoFile(env, path),
+    appendEntry: (path, section, line) => appendEntry(env, path, section, line),
     now: () => new Date(),
   };
 }
@@ -67,6 +99,7 @@ export async function ask(question: string, deps: AskDeps): Promise<string> {
   );
   if (!rules.ok) return `Konnte CLAUDE.md nicht laden (${rules.error}).`;
 
+  const isoDate = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" }); // JJJJ-MM-TT
   const today = deps.now().toLocaleString("de-DE", {
     timeZone: "Europe/Berlin",
     weekday: "long",
@@ -83,7 +116,7 @@ export async function ask(question: string, deps: AskDeps): Promise<string> {
     {
       type: "text",
       text: [
-        `Jetzt: ${today} (Europe/Berlin)`,
+        `Jetzt: ${today} (Europe/Berlin), Datum für Einträge: ${isoDate}`,
         `# docs/status.md\n\n${status.ok ? status.text : `(nicht ladbar: ${status.error})`}`,
         `# docs/eingang.md\n\n${inbox.ok ? inbox.text : `(nicht ladbar: ${inbox.error})`}`,
       ].join("\n\n"),
@@ -93,6 +126,8 @@ export async function ask(question: string, deps: AskDeps): Promise<string> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: question }];
   const usage: Usage = { calls: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
   let toolCalls = 0;
+  const saved: Extract<AppendResult, { ok: true }>[] = [];
+  const finish = (modelText: string) => confirm(saved, modelText);
 
   try {
     for (let round = 1; round <= MAX_ROUNDS; round++) {
@@ -108,7 +143,7 @@ export async function ask(question: string, deps: AskDeps): Promise<string> {
       });
       addUsage(usage, response.usage);
 
-      if (response.stop_reason === "refusal") return "Dazu kann ich nichts sagen (vom Modell abgelehnt).";
+      if (response.stop_reason === "refusal") return finish("Dazu kann ich nichts sagen (vom Modell abgelehnt).");
 
       const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
       if (response.stop_reason !== "tool_use" || toolUses.length === 0 || lastRound) {
@@ -118,32 +153,59 @@ export async function ask(question: string, deps: AskDeps): Promise<string> {
           .join("\n")
           .trim();
         const cut = response.stop_reason === "max_tokens" ? " … (abgeschnitten)" : "";
-        return (text || "Dazu habe ich keine Antwort gefunden.") + cut;
+        return finish(text + (text ? cut : ""));
       }
 
       messages.push({ role: "assistant", content: response.content });
       const results: Anthropic.ToolResultBlockParam[] = [];
       for (const use of toolUses) {
         toolCalls++;
-        results.push(await runTool(use, deps, toolCalls > MAX_TOOL_CALLS));
+        results.push(await runTool(use, deps, toolCalls > MAX_TOOL_CALLS, isoDate, saved));
       }
       messages.push({ role: "user", content: results });
     }
-    return "Dazu habe ich keine Antwort gefunden.";
+    return finish("");
   } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) return "Der Anthropic-Schlüssel wird abgelehnt (ANTHROPIC_API_KEY prüfen).";
-    if (error instanceof Anthropic.RateLimitError) return "Das Modell ist gerade ausgelastet oder das Ausgabenlimit ist erreicht. Später noch mal.";
-    if (error instanceof Anthropic.APIError) return `Das Modell ist gerade nicht erreichbar (HTTP ${error.status ?? "?"}).`;
+    if (error instanceof Anthropic.AuthenticationError) return finish("Der Anthropic-Schlüssel wird abgelehnt (ANTHROPIC_API_KEY prüfen).");
+    if (error instanceof Anthropic.RateLimitError) return finish("Das Modell ist gerade ausgelastet oder das Ausgabenlimit ist erreicht. Später noch mal.");
+    if (error instanceof Anthropic.APIError) return finish(`Das Modell ist gerade nicht erreichbar (HTTP ${error.status ?? "?"}).`);
     console.log(`ask: ${error instanceof Error ? error.name : "Fehler"}`);
-    return "Beim Beantworten ist etwas schiefgegangen.";
+    return finish("Beim Beantworten ist etwas schiefgegangen.");
   } finally {
     logUsage(usage, toolCalls);
   }
 }
 
-async function runTool(use: Anthropic.ToolUseBlock, deps: AskDeps, overLimit: boolean): Promise<Anthropic.ToolResultBlockParam> {
+// Bestätigung aus dem, was wirklich gespeichert wurde – nicht aus dem Modelltext.
+export function confirm(saved: Extract<AppendResult, { ok: true }>[], modelText: string): string {
+  const lines = saved.map((s) => `Abgelegt: ${s.path.replace(/^(bereiche|docs)\//, "").replace(/\.md$/, "")} › ${s.section.replace(/^#+ /, "")}`);
+  let text = modelText.trim();
+  if (saved.length === 0 && /^\W*abgelegt/i.test(text)) {
+    text = "Achtung: Es wurde nichts gespeichert. Bitte noch einmal schicken.";
+  }
+  if (lines.length === 0) return text || "Dazu habe ich keine Antwort gefunden.";
+  return [...lines, text].filter(Boolean).join("\n");
+}
+
+async function runTool(
+  use: Anthropic.ToolUseBlock,
+  deps: AskDeps,
+  overLimit: boolean,
+  isoDate: string,
+  saved: Extract<AppendResult, { ok: true }>[],
+): Promise<Anthropic.ToolResultBlockParam> {
   const fail = (content: string): Anthropic.ToolResultBlockParam => ({ type: "tool_result", tool_use_id: use.id, content, is_error: true });
-  if (overLimit) return fail("Limit an Dateizugriffen erreicht. Antworte mit dem, was du hast.");
+  if (overLimit) return fail("Limit an Werkzeugaufrufen erreicht. Antworte mit dem, was du hast.");
+  if (use.name === "append_entry") {
+    const { path, section, line } = use.input as { path?: unknown; section?: unknown; line?: unknown };
+    if (typeof path !== "string" || typeof section !== "string" || typeof line !== "string") return fail("path, section und line als Text angeben.");
+    const checked = checkLine(path, section, line, isoDate);
+    if (!checked.ok) return fail(checked.error);
+    const result = await deps.appendEntry(path, section, checked.line);
+    if (!result.ok) return fail(result.error);
+    saved.push(result);
+    return { type: "tool_result", tool_use_id: use.id, content: `Gespeichert: ${checked.line}` };
+  }
   if (use.name !== "read_file") return fail(`Unbekanntes Werkzeug: ${use.name}`);
   const path = (use.input as { path?: unknown }).path;
   if (typeof path !== "string" || !ALLOWED_PATH.test(path)) return fail("Pfad nicht erlaubt.");

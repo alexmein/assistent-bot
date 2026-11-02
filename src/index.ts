@@ -1,4 +1,4 @@
-// Assistent-Bot, Schritt 3: /status aus dem Repo, sonst kleine Fragen an Claude (nur lesend).
+// Assistent-Bot, Schritt 4: /status aus dem Repo, sonst kleine Fragen und Erfassen mit Claude (nur Anhängen).
 // Nimmt nur Nachrichten aus Alex' Chat an.
 
 import { ask, defaultDeps } from "./ask";
@@ -51,7 +51,7 @@ export default {
 };
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. Alles andere verstehe ich als kleine Frage an das Repo (nur lesen, erfassen kommt im nächsten Schritt).";
+  "Befehle: /status – Dashboard aus docs/status.md. Alles andere lege ich ab oder beantworte es als kleine Frage. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "In diesem Schritt verstehe ich nur Text.";

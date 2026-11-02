@@ -3,13 +3,17 @@
 Telegram-Bot des persönlichen Assistenten. Läuft als Cloudflare Worker.
 Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `docs/bauplan.md`, Entscheidungen 38/39).
 
-## Stand: Schritt 3 von 8 – kleine Fragen (nur lesend)
+## Stand: Schritt 4 von 8 – erfassen (nur anhängen) und kleine Fragen
 - `POST /telegram` mit Telegram-Webhook-Secret; alles andere 404/401.
 - Antwortet nur im privaten Chat mit `ALLOWED_CHAT_ID`; fremde Chats werden ignoriert (nur die ID wird geloggt, nie Text).
 - `/status` liest `docs/status.md` über die GitHub-API (`GITHUB_REPO` in `wrangler.toml`). `/start` zeigt die Hilfe.
 - Jeder andere Text geht an Claude Haiku 5.5 (`src/ask.ts`): CLAUDE.md (gecacht) + Dashboard + Eingangskorb im Systemprompt,
-  einziges Werkzeug `read_file` auf `CLAUDE.md`, `docs|bereiche|monitor|archiv/*.md`. Höchstens 4 Modellaufrufe und
-  6 Dateizugriffe pro Frage. Verbrauch und Kosten je Frage stehen im Log (`Verbrauch {...}`), ohne Frage- oder Antworttext.
+  Werkzeuge `read_file` (`CLAUDE.md`, `docs|bereiche|monitor|archiv/*.md`) und `append_entry` (`src/append.ts`).
+  Höchstens 4 Modellaufrufe und 6 Werkzeugaufrufe pro Nachricht.
+- `append_entry` hängt genau eine Zeile an einen erlaubten Abschnitt an (Bereiche: Aktiv/Wartet/Geparkt; Eingangskorb;
+  Dashboard: Kritisch, Fristen, → am Mac). Der Code prüft vor jedem Schreiben, dass sich die Datei nur um diese Zeile
+  ändert; erledigt markieren, `[A]`/`[A~]` und Nummern nach R7 werden abgelehnt. Jede Ablage ist ein Commit
+  „… (via Telegram)“. Die Bestätigung „Abgelegt: …“ erzeugt der Code aus dem tatsächlich Gespeicherten. Verbrauch und Kosten je Frage stehen im Log (`Verbrauch {...}`), ohne Frage- oder Antworttext.
 
 ## Secrets (nur per `wrangler secret put`, nie im Repo)
 | Name | Woher |
