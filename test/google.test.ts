@@ -81,6 +81,27 @@ describe("saveToDrive", () => {
 
 describe("checkGoogle", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("große Dateien (> 5 MB) per resumable upload", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("oauth2")) return Response.json({ access_token: "at", expires_in: 3600 });
+      if (url.includes("q=")) return Response.json({ files: [{ id: "eingang" }] });
+      if (url.includes("uploadType=resumable")) return new Response(null, { headers: { Location: "https://upload.example/session1" } });
+      if (url === "https://upload.example/session1") return Response.json({ id: "f", webViewLink: "https://drive/gross" });
+      return new Response("unerwartet", { status: 500 });
+    }));
+    const bytes = new Uint8Array(6 * 1024 * 1024);
+    const env = { GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", GOOGLE_REFRESH_TOKEN: "r", DRIVE_ROOT_ID: "root" } as Env;
+    const saved = await saveToDrive(env, ["Eingang"], "Vertrag.pdf", "application/pdf", bytes);
+    expect(saved.link).toBe("https://drive/gross");
+    const put = calls.find((c) => c.init?.method === "PUT")!;
+    expect(put.init!.body).toBe(bytes);
+    expect((put.init!.headers as Record<string, string>).Authorization).toBe("Bearer at");
+    const start = calls.find((c) => c.url.includes("uploadType=resumable"))!;
+    expect(JSON.parse(start.init!.body as string)).toEqual({ name: "Vertrag.pdf", parents: ["eingang"] });
+  });
+
   it("meldet je Dienst ok oder den Grund von Google, nur mit GET", async () => {
     const methods: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {

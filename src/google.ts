@@ -94,10 +94,19 @@ export interface Saved {
   link: string;
 }
 
+const MULTIPART_MAX = 5 * 1024 * 1024; // darüber „resumable“ (Google: multipart nur für kleine Dateien)
+
 export async function saveToDrive(env: Env, folderParts: string[], name: string, mime: string, bytes: Uint8Array): Promise<Saved> {
   const parent = await ensureFolder(env, folderParts);
-  const boundary = `b${crypto.randomUUID()}`;
   const meta = JSON.stringify({ name, parents: [parent] });
+  const res = await (bytes.length > MULTIPART_MAX ? uploadResumable(env, meta, mime, bytes) : uploadMultipart(env, meta, mime, bytes));
+  const file = (await res.json()) as { id: string; webViewLink: string };
+  console.log(`Drive: Datei abgelegt in ${folderParts.join("/")}`); // ohne Namen (R7)
+  return { name, folder: folderParts.join("/"), link: file.webViewLink };
+}
+
+function uploadMultipart(env: Env, meta: string, mime: string, bytes: Uint8Array): Promise<Response> {
+  const boundary = `b${crypto.randomUUID()}`;
   const head = new TextEncoder().encode(
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`,
   );
@@ -106,14 +115,23 @@ export async function saveToDrive(env: Env, folderParts: string[], name: string,
   body.set(head, 0);
   body.set(bytes, head.length);
   body.set(tail, head.length + bytes.length);
-  const res = await drive(env, "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
+  return drive(env, "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
     method: "POST",
     headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
   });
-  const file = (await res.json()) as { id: string; webViewLink: string };
-  console.log(`Drive: Datei abgelegt in ${folderParts.join("/")}`); // ohne Namen (R7)
-  return { name, folder: folderParts.join("/"), link: file.webViewLink };
+}
+
+// Große Dateien: Sitzung öffnen, dann alles in einem PUT (bis 25 MB passt in den Speicher des Workers).
+async function uploadResumable(env: Env, meta: string, mime: string, bytes: Uint8Array): Promise<Response> {
+  const start = await drive(env, "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink", {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": mime, "X-Upload-Content-Length": String(bytes.length) },
+    body: meta,
+  });
+  const session = start.headers.get("Location");
+  if (!session) throw new GoogleError("Drive: keine Upload-Sitzung erhalten");
+  return drive(env, session, { method: "PUT", headers: { "Content-Type": mime }, body: bytes as Uint8Array<ArrayBuffer> });
 }
 
 // ---------- Kalender ----------
