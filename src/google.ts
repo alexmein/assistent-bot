@@ -182,7 +182,8 @@ export async function checkGoogle(env: Env): Promise<string[]> {
     return [`Anmeldung: ${e instanceof Error ? e.message : "Fehler"}`];
   }
   const probes: [string, string][] = [
-    ["Kalender", "https://www.googleapis.com/calendar/v3/calendars/primary"],
+    // Termine lesen statt Kalender-Metadaten: calendar.events deckt nur Termine ab, calendars.get gibt 403.
+    ["Kalender", "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1&fields=kind"],
     ["Drive-Ablage", `https://www.googleapis.com/drive/v3/files/${env.DRIVE_ROOT_ID}?fields=id`],
     ["Gmail (lesen)", "https://gmail.googleapis.com/gmail/v1/users/me/profile"],
   ];

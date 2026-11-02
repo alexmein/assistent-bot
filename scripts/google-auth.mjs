@@ -99,7 +99,7 @@ await putSecret("GOOGLE_CLIENT_SECRET", clientSecret);
 await putSecret("GOOGLE_REFRESH_TOKEN", tokens.refresh_token);
 
 const auth = { Authorization: `Bearer ${tokens.access_token}` };
-const cal = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary", { headers: auth });
+const cal = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1&fields=timeZone", { headers: auth });
 const calInfo = await cal.json();
 console.log(cal.ok ? `→ Kalender erreichbar: Zeitzone ${calInfo.timeZone}` : `Kalender nicht erreichbar (HTTP ${cal.status})`);
 
