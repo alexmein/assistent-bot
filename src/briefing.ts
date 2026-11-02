@@ -3,6 +3,7 @@
 // ersten Test ganze Abschnitte weggelassen; eine Liste braucht kein Urteil, und so kann nichts fehlen oder erfunden sein (R2).
 
 import type { FileResult } from "./github";
+import { calendarLines, periodsFor } from "./kalender";
 import { BEREICHE } from "./mail";
 
 const TUTZING = { latitude: 47.909, longitude: 11.28 }; // Open-Meteo-Ortssuche „Tutzing“, 2026-11-02
@@ -176,42 +177,83 @@ const WMO: [number[], string][] = [
   [[1, 2], "heiter bis wolkig"],
   [[3], "bedeckt"],
   [[45, 48], "Nebel"],
-  [[51, 53, 55, 56, 57], "Nieselregen"],
-  [[61, 63, 65, 66, 67], "Regen"],
-  [[71, 73, 75, 77], "Schnee"],
-  [[80, 81, 82], "Regenschauer"],
-  [[85, 86], "Schneeschauer"],
-  [[95, 96, 99], "Gewitter"],
+];
+const SNOW = new Set([71, 73, 75, 77, 85, 86]);
+
+export interface Hourly {
+  hour: number;
+  rain: number; // mm
+  prob: number; // %
+  code: number;
+}
+
+export interface Day {
+  code: number;
+  max: number;
+  min: number;
+  gusts: number; // km/h
+  sun: number; // Stunden
+  hours: Hourly[];
+}
+
+const PARTS: [string, number, number][] = [
+  ["Vormittag", 6, 12],
+  ["Nachmittag", 12, 18],
+  ["Abend", 18, 22],
 ];
 
-const WET = new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99]);
+const mm = (x: number) => x.toFixed(1).replace(".", ",");
 
-// Open-Meteo meldete im Test „Regen“ bei 0 mm und 0 %: Niederschlag nur nennen, wenn auch welcher erwartet wird.
-export function weatherText(d: { code: number; max: number; min: number; rain: number; sum: number }): string {
-  const dry = WET.has(d.code) && d.sum < 0.1 && d.rain < 10;
-  const sky = dry ? "bedeckt" : (WMO.find(([codes]) => codes.includes(d.code))?.[1] ?? "wechselhaft");
-  const wet = d.sum >= 0.1 ? `, ${d.sum.toFixed(1).replace(".", ",")} mm Niederschlag (${Math.round(d.rain)} %)` : d.rain >= 10 ? `, Regenrisiko ${Math.round(d.rain)} %` : "";
-  return `Tutzing: ${sky}, ${Math.round(d.min)}–${Math.round(d.max)} °C${wet} (Wetter: open-meteo.com)`;
+// Pro Tagesabschnitt ausdrücklich: trocken, Regenrisiko oder Regen/Schnee mit Menge und ab wann.
+export function partText(hours: Hourly[]): string {
+  const sum = hours.reduce((t, h) => t + h.rain, 0);
+  const prob = Math.max(0, ...hours.map((h) => h.prob));
+  if (sum >= 0.2) {
+    const first = hours.find((h) => h.rain >= 0.1)?.hour;
+    const kind = hours.some((h) => SNOW.has(h.code)) ? "Schnee" : "Regen";
+    return `${kind}${first !== undefined && first > hours[0].hour ? ` ab ${first} Uhr` : ""} ${mm(sum)} mm (${Math.round(prob)} %)`;
+  }
+  return prob >= 30 ? `Regenrisiko ${Math.round(prob)} %` : "trocken";
+}
+
+export function weatherText(d: Day): string {
+  const parts = PARTS.map(([name, from, to]) => [name, partText(d.hours.filter((h) => h.hour >= from && h.hour < to))]);
+  const allDry = parts.every(([, t]) => t === "trocken");
+  const sky = WMO.find(([codes]) => codes.includes(d.code))?.[1] ?? (allDry ? "bedeckt" : "wechselhaft");
+  const sun = d.sun >= 1 ? `, Sonne ${Math.round(d.sun)} h` : "";
+  const rain = allDry ? "ganztags trocken" : parts.map(([n, t]) => `${n} ${t}`).join(" · ");
+  const gusts = d.gusts >= 40 ? ` Böen bis ${Math.round(d.gusts)} km/h.` : "";
+  return `Wetter Tutzing: ${Math.round(d.min)}–${Math.round(d.max)} °C, ${sky}${sun}. ${rain}.${gusts} (open-meteo.com)`;
 }
 
 export async function fetchWeather(fetcher: typeof fetch = fetch): Promise<string> {
   const params = new URLSearchParams({
     latitude: String(TUTZING.latitude),
     longitude: String(TUTZING.longitude),
-    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum",
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,wind_gusts_10m_max,sunshine_duration",
+    hourly: "precipitation,precipitation_probability,weather_code",
     timezone: "Europe/Berlin",
     forecast_days: "1",
   });
   try {
     const res = await fetcher(`https://api.open-meteo.com/v1/forecast?${params}`);
     if (!res.ok) return "Wetter: gerade nicht abrufbar.";
-    const d = ((await res.json()) as { daily: Record<string, number[]> }).daily;
+    const data = (await res.json()) as { daily: Record<string, number[]>; hourly: Record<string, (number | string)[]> };
+    const h = data.hourly;
+    const hours: Hourly[] = (h.time as string[]).map((t, i) => ({
+      hour: Number(t.slice(11, 13)),
+      rain: Number(h.precipitation[i] ?? 0),
+      prob: Number(h.precipitation_probability[i] ?? 0),
+      code: Number(h.weather_code[i] ?? 0),
+    }));
+    const d = data.daily;
     return weatherText({
       code: d.weather_code[0],
       max: d.temperature_2m_max[0],
       min: d.temperature_2m_min[0],
-      rain: d.precipitation_probability_max[0] ?? 0,
-      sum: d.precipitation_sum?.[0] ?? 0,
+      gusts: d.wind_gusts_10m_max?.[0] ?? 0,
+      sun: (d.sunshine_duration?.[0] ?? 0) / 3600,
+      hours,
     });
   } catch {
     return "Wetter: gerade nicht abrufbar.";
@@ -231,7 +273,12 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
   const today = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const sinceDate = new Date(sinceIso).toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const paths = ["docs/status.md", "docs/eingang.md", ...BEREICHE.map((b) => `bereiche/${b}.md`)];
-  const [weather, commits, ...files] = await Promise.all([deps.weather(), deps.commitsSince(sinceIso), ...paths.map((p) => deps.readFile(p))]);
+  const [weather, commits, kalender, ...files] = await Promise.all([
+    deps.weather(),
+    deps.commitsSince(sinceIso),
+    deps.readFile("docs/kalender.md"),
+    ...paths.map((p) => deps.readFile(p)),
+  ]);
 
   const dated = paths.flatMap((p, i) => {
     const f = files[i];
@@ -244,6 +291,7 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
 
   const blocks: string[] = [];
   const add = (title: string, lines: string[]) => lines.length && blocks.push([title, ...lines].join("\n"));
+  add("Feiertage und Ferien", calendarLines(today, periodsFor(today, kalender.ok ? kalender.text : "")));
   add("Heute fällig", dedupe(due.heute).map((l) => item(l, false)));
   add("Überfällig (kritisch)", dedupe(due.ueberfaellig).map((l) => item(l, true)));
   add("Fristen nächste 7 Tage", dedupe(due.bald).map((l) => item(l, true)));
@@ -255,6 +303,7 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string): Promi
   add("Auffälligkeiten", findings.map(findingLine));
   if (unreadable.length) blocks.push(`(Nicht lesbar: ${unreadable.join(", ")})`);
 
-  const head = `${shortDate(today)} – ${weather}`;
+  if (!kalender.ok) blocks.push("(Nicht lesbar: docs/kalender.md)");
+  const head = `${shortDate(today)}\n${weather}`;
   return blocks.length ? `${head}\n\n${blocks.join("\n\n")}` : `${head}\nNichts Neues.`;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { addDays, buildBriefing, core, datedLines, dedupe, fetchWeather, newFindings, newItems, newsLines, resolve, selectDue, weatherText, type BriefingDeps } from "../src/briefing";
+import { addDays, buildBriefing, core, partText, type Day, datedLines, dedupe, fetchWeather, newFindings, newItems, newsLines, resolve, selectDue, weatherText, type BriefingDeps } from "../src/briefing";
 import type { FileResult } from "../src/github";
 
 const STATUS = `# Dashboard
@@ -64,17 +64,33 @@ describe("Neues", () => {
 });
 
 describe("Wetter", () => {
-  it("Text mit Quellenangabe; Regen nur, wenn auch Niederschlag erwartet wird", () => {
-    expect(weatherText({ code: 61, max: 8.6, min: 2.4, rain: 70, sum: 3.2 })).toBe("Tutzing: Regen, 2–9 °C, 3,2 mm Niederschlag (70 %) (Wetter: open-meteo.com)");
-    expect(weatherText({ code: 61, max: 6, min: 3, rain: 0, sum: 0 })).toBe("Tutzing: bedeckt, 3–6 °C (Wetter: open-meteo.com)");
-    expect(weatherText({ code: 3, max: 6, min: 3, rain: 30, sum: 0 })).toBe("Tutzing: bedeckt, 3–6 °C, Regenrisiko 30 % (Wetter: open-meteo.com)");
+  const hours = (spec: Record<number, [number, number, number?]>) =>
+    Array.from({ length: 24 }, (_, hour) => ({ hour, rain: spec[hour]?.[0] ?? 0, prob: spec[hour]?.[1] ?? 0, code: spec[hour]?.[2] ?? 3 }));
+  const day = (over: Partial<Day> = {}): Day => ({ code: 3, max: 6.4, min: 2.6, gusts: 20, sun: 0.3, hours: hours({}), ...over });
+
+  it("ganztags trocken wird ausdrücklich gesagt", () => {
+    expect(weatherText(day())).toBe("Wetter Tutzing: 3–6 °C, bedeckt. ganztags trocken. (open-meteo.com)");
   });
-  it("Fehler → Hinweis statt Abbruch", async () => {
+  it("Regen je Tagesabschnitt mit Beginn, Menge und Wahrscheinlichkeit; Böen und Sonne", () => {
+    const d = day({ code: 61, gusts: 52, sun: 2.4, hours: hours({ 15: [0.8, 70, 61], 16: [1.1, 80, 61], 10: [0, 35] }) });
+    expect(weatherText(d)).toBe(
+      "Wetter Tutzing: 3–6 °C, wechselhaft, Sonne 2 h. Vormittag Regenrisiko 35 % · Nachmittag Regen ab 15 Uhr 1,9 mm (80 %) · Abend trocken. Böen bis 52 km/h. (open-meteo.com)",
+    );
+  });
+  it("Schnee", () => {
+    expect(partText(hours({ 7: [0.5, 60, 73] }).filter((h) => h.hour >= 6 && h.hour < 12))).toBe("Schnee ab 7 Uhr 0,5 mm (60 %)");
+  });
+  it("Fehler → Hinweis statt Abbruch; Abfrage stündlich", async () => {
     expect(await fetchWeather(vi.fn(async () => new Response("x", { status: 503 })) as unknown as typeof fetch)).toBe("Wetter: gerade nicht abrufbar.");
     const ok = vi.fn(async () =>
-      Response.json({ daily: { weather_code: [3], temperature_2m_max: [6.5], temperature_2m_min: [2.4], precipitation_probability_max: [0], precipitation_sum: [0] } }),
+      Response.json({
+        daily: { weather_code: [3], temperature_2m_max: [6.5], temperature_2m_min: [2.4], wind_gusts_10m_max: [30], sunshine_duration: [7200] },
+        hourly: { time: ["2026-11-03T14:00"], precipitation: [0.5], precipitation_probability: [60], weather_code: [61] },
+      }),
     );
-    expect(await fetchWeather(ok as unknown as typeof fetch)).toBe("Tutzing: bedeckt, 2–7 °C (Wetter: open-meteo.com)");
+    expect(await fetchWeather(ok as unknown as typeof fetch)).toBe(
+      "Wetter Tutzing: 2–7 °C, bedeckt, Sonne 2 h. Vormittag trocken · Nachmittag Regen 0,5 mm (60 %) · Abend trocken. (open-meteo.com)",
+    );
     expect(String((ok.mock.calls[0] as unknown[])[0])).toContain("latitude=47.909&longitude=11.28");
   });
 });
@@ -130,7 +146,7 @@ describe("buildBriefing", () => {
   }
 
   it("Nichts Neues", async () => {
-    expect(await buildBriefing(deps({}), "2026-11-02T07:30:00Z")).toBe("Di 03.11. – Tutzing: klar\nNichts Neues.");
+    expect(await buildBriefing(deps({}), "2026-11-02T07:30:00Z")).toBe("Di 03.11.\nTutzing: klar\nNichts Neues.");
   });
 
   it("alle Abschnitte, ohne Doppelte, nur aus dem Repo", async () => {
@@ -144,7 +160,8 @@ describe("buildBriefing", () => {
     );
     expect(out).toBe(
       [
-        "Di 03.11. – Tutzing: klar",
+        "Di 03.11.",
+        "Tutzing: klar",
         "",
         "Heute fällig",
         "- Makler anrufen · standard (privat-todos)",
