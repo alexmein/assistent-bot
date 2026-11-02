@@ -363,6 +363,16 @@ export async function file(mail: Mail, a: Analysis, deps: FileDeps, today: strin
       done.push(`${path.replace(/^(bereiche|docs)\//, "").replace(/\.md$/, "")} › ${section.replace(/^#+ /, "")}`);
       return;
     }
+    // Abschnitt fehlt im Bereich (z. B. ki-arbeitsweise hat keine „## Verweise“): Zeile mit Ziel in den Eingangskorb.
+    if (path.startsWith("bereiche/") && result.error.startsWith("Abschnitt")) {
+      const name = path.replace(/^bereiche\/|\.md$/g, "");
+      const moved = raw.replace(/^- (\[ \] )?/, (m) => `${m}→ ${name}: `);
+      const again = checkLine("docs/eingang.md", "## Unzugeordnet", moved, today, "Mail");
+      if (again.ok && (await deps.write("docs/eingang.md", "## Unzugeordnet", again.line)).ok) {
+        done.push(`eingang › Unzugeordnet (→ ${name})`);
+        return;
+      }
+    }
     // Abgelehnt (z. B. R7) oder Schreibfehler: Hinweis statt Inhalt, damit nichts still verloren geht.
     const note = checkLine("docs/eingang.md", "## Unzugeordnet", `- [?] Mail ${mail.from} vom ${mail.date}: Eintrag nicht abgelegt (${result.error.slice(0, 120)}) – Mail am Mac ansehen`, today, "Mail");
     if (note.ok && (await deps.write("docs/eingang.md", "## Unzugeordnet", note.line)).ok) done.push("eingang › Unzugeordnet (Hinweis)");

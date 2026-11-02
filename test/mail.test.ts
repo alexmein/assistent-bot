@@ -226,6 +226,19 @@ describe("file", () => {
     expect(lines[1].line).toContain("Anhänge nicht abgelegt");
   });
 
+  it("Abschnitt fehlt im Bereich → Zeile mit Ziel in den Eingangskorb", async () => {
+    const lines: string[] = [];
+    const write = vi.fn(async (path: string, section: string, line: string): Promise<AppendResult> => {
+      if (path.startsWith("bereiche/")) return { ok: false, error: `Abschnitt „${section}“ fehlt in ${path}.` };
+      lines.push(`${path} ${line}`);
+      return { ok: true, path, section, line };
+    });
+    const save = vi.fn(async () => ({ name: "2026-11-02 Anthropic Rechnung.pdf", folder: "KI", link: "https://drive.google.com/r" }));
+    const done = await file(mail({ from: "Anthropic" }), analysis({ bereich: "ki-arbeitsweise" }), { write, save }, "2026-11-02", [pdf()]);
+    expect(lines).toEqual([expect.stringMatching(/^docs\/eingang\.md - → ki-arbeitsweise: 2026-11-02 Anthropic Rechnung\.pdf – Drive: https:\/\/drive\.google\.com\/r/)]);
+    expect(done).toEqual(["In Drive: KI/2026-11-02 Anthropic Rechnung.pdf", "eingang › Unzugeordnet (→ ki-arbeitsweise)"]);
+  });
+
   it("Unklares → [?] im Eingangskorb", async () => {
     const { write, lines } = writer();
     await file(mail(), analysis({ unklar: "Adressiert an Verena" }), { write }, "2026-11-02");
