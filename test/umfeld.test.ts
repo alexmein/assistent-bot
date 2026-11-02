@@ -43,7 +43,7 @@ describe("Darstellung", () => {
 });
 
 describe("research", () => {
-  it("Haiku mit Websuche (höchstens 6), setzt bei pause_turn fort", async () => {
+  it("Haiku mit Websuche (höchstens 5), setzt bei pause_turn fort", async () => {
     const usage = { input_tokens: 5000, output_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 3 } };
     const create = vi
       .fn()
@@ -54,7 +54,15 @@ describe("research", () => {
     expect(create).toHaveBeenCalledTimes(2);
     const p = create.mock.calls[0][0] as Anthropic.MessageCreateParamsNonStreaming;
     expect(p.model).toBe("claude-haiku-5-5");
-    expect(p.tools).toEqual([expect.objectContaining({ type: "web_search_20250305", max_uses: 6 })]);
+    expect(p.tools).toEqual([expect.objectContaining({ type: "web_search_20250305", max_uses: 5 })]);
     expect((create.mock.calls[1][0] as Anthropic.MessageCreateParamsNonStreaming).messages).toHaveLength(2);
+  });
+
+  it("abgeschnitten oder ohne Text: Fehler statt stiller 0", async () => {
+    const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    const cut = vi.fn().mockResolvedValue({ content: [{ type: "server_tool_use" }], stop_reason: "max_tokens", usage });
+    await expect(research({ messages: { create: cut } } as unknown as Pick<Anthropic, "messages">, "2026-11-03")).rejects.toThrow("abgeschnitten");
+    const empty = vi.fn().mockResolvedValue({ content: [], stop_reason: "end_turn", usage });
+    await expect(research({ messages: { create: empty } } as unknown as Pick<Anthropic, "messages">, "2026-11-03")).rejects.toThrow("keine Ergebnisliste");
   });
 });

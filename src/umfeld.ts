@@ -9,7 +9,7 @@ import { costUsd, MODEL } from "./ask";
 
 export const UMFELD_KEY = "umfeld";
 const SEARCH_USD = 0.01; // 10 $ pro 1.000 Suchen (Preisliste 2026-11-02)
-const MAX_SEARCHES = 6;
+const MAX_SEARCHES = 5; // Suchergebnisse füllen den Prompt; über 100k Tokens kostet Haiku das Fünffache (Test: 6 Suchen ≈ 98k)
 const KINDS = ["Region", "Sport", "Politik"] as const;
 
 export interface Ereignis {
@@ -87,7 +87,7 @@ export async function research(client: Pick<Anthropic, "messages">, today: strin
   for (let round = 0; round < 3; round++) {
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 4000,
+      max_tokens: 16000, // Nachdenken und Suchaufrufe zählen mit; 4000 reichten im Test nicht bis zur Ergebnisliste
       system: INSTRUCTIONS,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: MAX_SEARCHES, user_location: { type: "approximate", city: "Tutzing", region: "Bayern", country: "DE", timezone: "Europe/Berlin" } }],
       messages,
@@ -102,12 +102,15 @@ export async function research(client: Pick<Anthropic, "messages">, today: strin
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)
       .join("");
+    if (response.stop_reason === "max_tokens") throw new Error("Antwort abgeschnitten (max_tokens) – keine Ergebnisliste");
+    if (response.stop_reason === "refusal") throw new Error("Modell hat abgelehnt");
     if (response.stop_reason !== "pause_turn") break;
     messages.push({ role: "assistant", content: response.content });
   }
   console.log(`Verbrauch Umfeld ${JSON.stringify({ model: MODEL, ...usage, searches, usd: Number((costUsd(usage) + searches * SEARCH_USD).toFixed(6)) })}`);
   const stats: ParseStats = { zeilen: 0, angenommen: 0, verworfen: {} };
   const list = parseEreignisse(text, today, to, stats);
+  if (!text.trim()) throw new Error("Modell hat keine Ergebnisliste geschrieben");
   console.log(`Umfeld geprüft ${JSON.stringify({ textZeichen: text.length, ...stats })}`);
   return list;
 }
