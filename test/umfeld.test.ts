@@ -19,6 +19,15 @@ describe("parseEreignisse", () => {
   });
 });
 
+describe("parseEreignisse, tolerant", () => {
+  it("Tabellenrand, Fettdruck, Markdown-Link; zählt Gründe", () => {
+    const stats = { zeilen: 0, angenommen: 0, verworfen: {} as Record<string, number> };
+    const t = "| **EREIGNIS** | Region | 2026-11-07 | 2026-11-07 | Markt | Tutzing | mehr Kunden | [tutzing.de](https://www.tutzing.de/m) |\nEREIGNIS | Region | 7.11. | 7.11. | x | y | z | https://a.de";
+    expect(parseEreignisse(t, "2026-11-03", "2026-11-17", stats).map((e) => e.quelle)).toEqual(["https://www.tutzing.de/m"]);
+    expect(stats).toEqual({ zeilen: 2, angenommen: 1, verworfen: { datum: 1 } });
+  });
+});
+
 describe("Darstellung", () => {
   const list = parseEreignisse(TEXT, "2026-11-03", "2026-11-17");
   it("Woche nach Art gruppiert, mit Quelle", () => {
