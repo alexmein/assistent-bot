@@ -36,15 +36,21 @@ function sentText(spy: ReturnType<typeof mockTelegram>): string {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Echo-Bot", () => {
-  it("antwortet Alex mit einem Echo", async () => {
+describe("Zugang", () => {
+  it("antwortet Alex (ohne Anthropic-Schlüssel mit Hinweis)", async () => {
     const tg = mockTelegram();
     const res = await worker.fetch(post(update(111, "Hallo")), env);
     expect(res.status).toBe(200);
     expect(tg).toHaveBeenCalledOnce();
     const [url, init] = tg.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.telegram.org/bottest-token/sendMessage");
-    expect(JSON.parse(init.body as string)).toEqual({ chat_id: "111", text: "Echo: Hallo" });
+    expect(JSON.parse(init.body as string)).toEqual({ chat_id: "111", text: "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY)." });
+  });
+
+  it("kennt keine anderen Befehle", async () => {
+    const tg = mockTelegram();
+    await worker.fetch(post(update(111, "/loeschen")), env);
+    expect(sentText(tg)).toMatch(/^Unbekannter Befehl/);
   });
 
   it("ignoriert fremde Chats, quittiert aber mit 200", async () => {

@@ -7,4 +7,4 @@ workers_dev = true
 GITHUB_REPO = "alexmein/Assistent"
 
 # Secrets (nie hier, nur per `wrangler secret put`):
-#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN, ANTHROPIC_API_KEY

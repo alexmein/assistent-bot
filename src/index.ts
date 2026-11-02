@@ -1,12 +1,11 @@
-// Assistent-Bot, Schritt 2: /status aus dem Repo, sonst Echo. Nimmt nur Nachrichten aus Alex' Chat an.
+// Assistent-Bot, Schritt 3: /status aus dem Repo, sonst kleine Fragen an Claude (nur lesend).
+// Nimmt nur Nachrichten aus Alex' Chat an.
 
-export interface Env {
-  TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_WEBHOOK_SECRET: string;
-  ALLOWED_CHAT_ID?: string;
-  GITHUB_TOKEN?: string;
-  GITHUB_REPO: string;
-}
+import { ask, defaultDeps } from "./ask";
+import type { Env } from "./env";
+import { readRepoFile } from "./github";
+
+export type { Env } from "./env";
 
 interface TelegramUpdate {
   update_id: number;
@@ -46,20 +45,25 @@ export default {
       return ok();
     }
 
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, await reply(message.text, env));
+    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, await reply(message.text, env, chatId));
     return ok();
   },
 };
 
-const HELP = "Befehle: /status – Dashboard aus docs/status.md. Alles andere kommt vorerst als Echo zurück.";
+const HELP =
+  "Befehle: /status – Dashboard aus docs/status.md. Alles andere verstehe ich als kleine Frage an das Repo (nur lesen, erfassen kommt im nächsten Schritt).";
 
-async function reply(text: string | undefined, env: Env): Promise<string> {
+async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "In diesem Schritt verstehe ich nur Text.";
   // Telegram hängt in manchen Clients den Bot-Namen an: /status@meinwiedein_bot
   const command = text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
   if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
   if (command === "/status") return statusReply(env);
-  return `Echo: ${text}`;
+  if (command.startsWith("/")) return `Unbekannter Befehl. ${HELP}`;
+  if (!env.GITHUB_TOKEN) return "Mir fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
+  if (!env.ANTHROPIC_API_KEY) return "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY).";
+  await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
+  return truncate(await ask(text, defaultDeps(env)), TELEGRAM_MAX);
 }
 
 async function statusReply(env: Env): Promise<string> {
@@ -67,24 +71,6 @@ async function statusReply(env: Env): Promise<string> {
   const result = await readRepoFile(env, "docs/status.md");
   if (!result.ok) return `Konnte docs/status.md nicht laden (${result.error}).`;
   return truncate(result.text, TELEGRAM_MAX);
-}
-
-type FileResult = { ok: true; text: string } | { ok: false; error: string };
-
-async function readRepoFile(env: Env, path: string): Promise<FileResult> {
-  const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`, {
-    headers: {
-      Accept: "application/vnd.github.raw+json",
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-      "User-Agent": "assistent-bot",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!res.ok) {
-    console.log(`GitHub ${path}: HTTP ${res.status}`);
-    return { ok: false, error: `GitHub HTTP ${res.status}` };
-  }
-  return { ok: true, text: await res.text() };
 }
 
 const TELEGRAM_MAX = 4096;
@@ -106,6 +92,15 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
     body: JSON.stringify({ chat_id: chatId, text }),
   });
   if (!res.ok) console.log(`sendMessage fehlgeschlagen: HTTP ${res.status}`);
+}
+
+// „schreibt …“ in Telegram, solange das Modell arbeitet.
+async function sendChatAction(token: string, chatId: string): Promise<void> {
+  await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+  });
 }
 
 // Vergleich ohne frühen Abbruch, damit die Laufzeit das Secret nicht verrät.
