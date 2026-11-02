@@ -294,3 +294,54 @@ describe("Dokumente und Termine", () => {
     expect((docx[0] as Anthropic.TextBlockParam).text).toContain("nicht lesen");
   });
 });
+
+describe("Dateien schicken (Entscheidung 45)", () => {
+  const call = (name: string, input: unknown, id = "x") => ({ content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use", usage });
+  const withFiles = (responses: unknown[]) => {
+    const x = deps(responses);
+    const findFiles = vi.fn(async () => [{ id: "abc1234567890", name: "2025-01-29 zooplus Kündigung.pdf", folder: "Privat", modified: "2026-11-02" }]);
+    const sendFile = vi.fn(async () => "2025-01-29 zooplus Kündigung.pdf");
+    x.d.findFiles = findFiles;
+    x.d.sendFile = sendFile;
+    x.d.createEvent = vi.fn(async () => {});
+    return { ...x, findFiles, sendFile };
+  };
+
+  it("sucht, schickt in den Chat und bestätigt aus dem Code", async () => {
+    const { d, create, findFiles, sendFile } = withFiles([call("find_file", { suche: "zooplus" }), call("send_file", { id: "abc1234567890" }, "y"), text("")]);
+    expect(await ask("schick mir die zooplus-Kündigung", d)).toBe("Geschickt: 2025-01-29 zooplus Kündigung.pdf");
+    expect(findFiles).toHaveBeenCalledWith("zooplus");
+    expect(sendFile).toHaveBeenCalledWith("abc1234567890");
+    expect(JSON.stringify(paramsOf(create, 2).messages)).toContain("abc1234567890 | 2025-01-29 zooplus Kündigung.pdf | Privat | 2026-11-02");
+  });
+
+  it("nicht bei Dateien von Alex und nicht ohne Sendefunktion", async () => {
+    const a = withFiles([text("ok")]);
+    await ask("", a.d, { fileName: "x.pdf", mime: "application/pdf", bytes: new Uint8Array(4) });
+    expect((paramsOf(a.create, 0).tools as Anthropic.Tool[]).map((t) => t.name)).not.toContain("send_file");
+    const b = withFiles([text("ok")]);
+    b.d.sendFile = undefined;
+    await ask("x", b.d);
+    expect((paramsOf(b.create, 0).tools as Anthropic.Tool[]).map((t) => t.name)).not.toContain("find_file");
+  });
+
+  it("höchstens 3 Dateien pro Nachricht", async () => {
+    const four = {
+      content: ["a", "b", "c", "d"].map((id) => ({ type: "tool_use", id, name: "send_file", input: { id: `abc123456789${id}` } })),
+      stop_reason: "tool_use",
+      usage,
+    };
+    const { d, create, sendFile } = withFiles([four, text("")]);
+    await ask("schick alle", d);
+    expect(sendFile).toHaveBeenCalledTimes(3);
+    expect(lastResults(create, 1)[3]).toMatchObject({ is_error: true, content: "Höchstens 3 Dateien pro Nachricht." });
+  });
+
+  it("meldet Fehler (z. B. außerhalb der Ablage) ans Modell", async () => {
+    const { GoogleError } = await import("../src/google");
+    const { d, create, sendFile } = withFiles([call("send_file", { id: "fremd12345678" }), text("Die Datei liegt nicht in der Ablage.")]);
+    sendFile.mockRejectedValueOnce(new GoogleError("Die Datei liegt nicht in der Assistent-Ablage."));
+    expect(await ask("schick fremd", d)).toBe("Die Datei liegt nicht in der Ablage.");
+    expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true });
+  });
+});

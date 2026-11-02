@@ -251,3 +251,75 @@ export async function getAttachment(env: Env, messageId: string, attachmentId: s
   const data = await gmail<{ data: string }>(env, `messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`);
   return Uint8Array.from(atob(data.data.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 }
+
+// ---------- Dateien auf Anfrage (Schritt 9, Entscheidung 45) ----------
+// Mit drive.readonly sieht der Bot das ganze Drive; der Code gibt nur Dateien unterhalb der Assistent-Ablage heraus.
+
+export interface FoundFile {
+  id: string;
+  name: string;
+  folder: string; // Pfad unterhalb der Ablage, "" = direkt darin
+  modified: string; // JJJJ-MM-TT
+}
+
+const MAX_DEPTH = 6;
+const MAX_SEND_BYTES = 45 * 1024 * 1024; // Telegram nimmt von Bots bis 50 MB
+
+type DriveMeta = { id: string; name: string; mimeType?: string; size?: string; parents?: string[]; modifiedTime?: string };
+
+// Pfad eines Ordners unterhalb der Ablage ("" = die Ablage selbst), null wenn er nicht darin liegt.
+async function folderPath(env: Env, id: string | undefined, cache: Map<string, string | null>, depth = 0): Promise<string | null> {
+  if (!id || depth > MAX_DEPTH) return null;
+  if (id === env.DRIVE_ROOT_ID) return "";
+  if (cache.has(id)) return cache.get(id)!;
+  const meta = (await (await drive(env, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,name,parents`)).json()) as DriveMeta;
+  const parent = await folderPath(env, meta.parents?.[0], cache, depth + 1);
+  const path = parent === null ? null : [parent, meta.name].filter(Boolean).join("/");
+  cache.set(id, path);
+  return path;
+}
+
+export function driveSearchQuery(term: string): string {
+  const t = term.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return `trashed = false and mimeType != '${FOLDER}' and (name contains '${t}' or fullText contains '${t}')`;
+}
+
+export async function findFiles(env: Env, term: string): Promise<FoundFile[]> {
+  const params = new URLSearchParams({
+    q: driveSearchQuery(term),
+    fields: "files(id,name,parents,modifiedTime)",
+    pageSize: "25",
+    orderBy: "modifiedTime desc",
+  });
+  const data = (await (await drive(env, `https://www.googleapis.com/drive/v3/files?${params}`)).json()) as { files?: DriveMeta[] };
+  const cache = new Map<string, string | null>();
+  const found: FoundFile[] = [];
+  for (const f of data.files ?? []) {
+    const folder = await folderPath(env, f.parents?.[0], cache);
+    if (folder === null) continue;
+    found.push({ id: f.id, name: f.name, folder, modified: (f.modifiedTime ?? "").slice(0, 10) });
+    if (found.length >= 8) break;
+  }
+  return found;
+}
+
+export interface DriveDownload {
+  name: string;
+  mime: string;
+  bytes: Uint8Array;
+}
+
+// Lädt eine Datei – nur, wenn sie unterhalb der Ablage liegt. Google-Dokumente werden als PDF exportiert.
+export async function downloadFile(env: Env, id: string): Promise<DriveDownload> {
+  if (!/^[A-Za-z0-9_-]{10,100}$/.test(id)) throw new GoogleError("Ungültige Datei-ID");
+  const base = `https://www.googleapis.com/drive/v3/files/${id}`;
+  const meta = (await (await drive(env, `${base}?fields=id,name,mimeType,size,parents`)).json()) as DriveMeta;
+  if ((await folderPath(env, meta.parents?.[0], new Map())) === null) throw new GoogleError("Die Datei liegt nicht in der Assistent-Ablage.");
+  if (meta.mimeType === FOLDER) throw new GoogleError("Das ist ein Ordner, keine Datei.");
+  if (Number(meta.size ?? 0) > MAX_SEND_BYTES) throw new GoogleError("Die Datei ist größer als 45 MB – Telegram nimmt sie nicht.");
+  const native = meta.mimeType?.startsWith("application/vnd.google-apps.");
+  const res = await drive(env, native ? `${base}/export?mimeType=application%2Fpdf` : `${base}?alt=media`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length > MAX_SEND_BYTES) throw new GoogleError("Die Datei ist größer als 45 MB – Telegram nimmt sie nicht.");
+  return { name: native ? `${meta.name}.pdf` : meta.name, mime: native ? "application/pdf" : (meta.mimeType ?? "application/octet-stream"), bytes };
+}

@@ -6,7 +6,7 @@ import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
-import { checkGoogle, getAttachment, getMessage, googleReady, listMessages, saveToDrive } from "./google";
+import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, quietTime, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 
 export type { Env } from "./env";
@@ -120,7 +120,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -146,7 +146,13 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   if (!env.GITHUB_TOKEN) return "Mir fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
   if (!env.ANTHROPIC_API_KEY) return "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY).";
   await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
-  return truncate(await ask(text, defaultDeps(env, googleReady(env))), TELEGRAM_MAX);
+  // Dateien gehen nur in diesen Chat (Entscheidung 45) – der Empfänger steht im Code, nicht beim Modell.
+  const sendFile = async (id: string) => {
+    const file = await downloadFile(env, id);
+    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, file.name, file.mime, file.bytes);
+    return file.name;
+  };
+  return truncate(await ask(text, defaultDeps(env, googleReady(env), sendFile)), TELEGRAM_MAX);
 }
 
 async function fileReply(message: TelegramMessage, env: Env, chatId: string): Promise<string> {
@@ -209,6 +215,15 @@ async function sendMessage(token: string, chatId: string, text: string): Promise
     body: JSON.stringify({ chat_id: chatId, text }),
   });
   if (!res.ok) console.log(`sendMessage fehlgeschlagen: HTTP ${res.status}`);
+}
+
+async function sendDocument(token: string, chatId: string, name: string, mime: string, bytes: Uint8Array): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append("document", new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime }), name);
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
+  // GoogleError, damit ask() den Fehler als Werkzeugfehler meldet statt abzubrechen.
+  if (!res.ok) throw new GoogleError(`Telegram hat die Datei nicht angenommen (HTTP ${res.status}).`);
 }
 
 // „schreibt …“ in Telegram, solange das Modell arbeitet.

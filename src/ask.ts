@@ -1,17 +1,30 @@
 // Kleine Fragen, Erfassen, Dokumente und Termine mit Claude Haiku 5.5. Werkzeuge: read_file (erlaubte Repo-Pfade),
-// append_entry (nur Anhängen, Sperren in append.ts), save_document (nur bei Dateien) und create_event (nur bei Text
-// von Alex – aus Dokumenten erkannte Termine sind nur Vorschläge, CLAUDE.md §2).
+// append_entry (nur Anhängen, Sperren in append.ts), save_document (nur bei Dateien), create_event (nur bei Text
+// von Alex – aus Dokumenten erkannte Termine sind nur Vorschläge, CLAUDE.md §2) sowie find_file/send_file
+// (Datei aus der Drive-Ablage in Alex' eigenen Chat, Entscheidung 45; Empfänger ist fest, kein Mailversand).
 
 import Anthropic from "@anthropic-ai/sdk";
 import { appendEntry, checkLine, type AppendResult } from "./append";
 import type { Env } from "./env";
 import { readRepoFile, type FileResult } from "./github";
-import { checkEvent, checkFileName, checkFolder, GoogleError, insertEvent, saveToDrive, type EventInput, type Saved } from "./google";
+import {
+  checkEvent,
+  checkFileName,
+  checkFolder,
+  findFiles,
+  GoogleError,
+  insertEvent,
+  saveToDrive,
+  type EventInput,
+  type FoundFile,
+  type Saved,
+} from "./google";
 
 export const MODEL = "claude-haiku-5-5";
 const MAX_ROUNDS = 4; // Modellaufrufe pro Frage; der letzte ohne Werkzeuge
 const MAX_TOOL_CALLS = 6;
 const MAX_FILE_CHARS = 20_000;
+const MAX_SENDS = 3; // Dateien pro Nachricht
 
 // Listenpreise USD/MTok, Haiku 5.5 bis 100k Tokens Prompt (platform.claude.com/docs/en/about-claude/pricing, 2026-11-02)
 const PRICE = { input: 0.1, cacheWrite: 0.125, cacheRead: 0.01, output: 0.5 };
@@ -35,6 +48,9 @@ Erfassen (CLAUDE.md §1 Routing, §2 Autonomie, §4):
 - Keine Konto-, Ausweis-, Vertrags- oder Steuernummern, keine Passwörter, keine Beträge aus Kontoauszügen (R7).
 - Erinnerungen per Push kann der Bot noch nicht (kommt in Phase 3); die Frist steht im To-do.
 - Die Bestätigungen („Abgelegt: …“, „In Drive: …“, „Im Kalender: …“) erzeugt das Programm selbst aus dem, was wirklich gespeichert wurde. Schreib danach höchstens einen kurzen Zusatz (z. B. Begründung der Priorität) oder nichts. Schreib nie „abgelegt“, „eingetragen“ oder „gespeichert“, wenn das Werkzeug nicht erfolgreich war.
+
+Dateien schicken (nur wenn find_file verfügbar ist):
+- Will Alex eine Datei haben („schick mir die zooplus-Kündigung“), suche mit find_file (kurzer Suchbegriff, z. B. „zooplus“) und schicke die passende mit send_file in diesen Chat. Bei mehreren gleich passenden Treffern: die Liste kurz nennen und fragen, welche. Weiterleiten an andere macht Alex selbst; Mails versenden kannst du nicht.
 
 Termine (nur wenn create_event verfügbar ist):
 - Nennt Alex selbst einen Termin, trag ihn mit create_event in seinen Kalender ein (Europe/Berlin; ohne Uhrzeit ganztägig, ohne Ende eine Stunde). Ein To-do nur, wenn es zusätzlich etwas zu tun gibt.
@@ -112,6 +128,28 @@ const CREATE_EVENT: Anthropic.Tool = {
   },
 };
 
+const FIND_FILE: Anthropic.Tool = {
+  name: "find_file",
+  description: "Sucht Dateien in Alex' Drive-Ablage nach Name und Inhalt. Gibt höchstens 8 Treffer zurück (id, Name, Ordner, Datum), neueste zuerst.",
+  input_schema: {
+    type: "object",
+    properties: { suche: { type: "string", description: "Ein bis drei Wörter, z. B. zooplus Kündigung" } },
+    required: ["suche"],
+    additionalProperties: false,
+  },
+};
+
+const SEND_FILE: Anthropic.Tool = {
+  name: "send_file",
+  description: "Schickt eine Datei aus der Drive-Ablage als Dokument in Alex' Telegram-Chat (nur dorthin). id aus find_file.",
+  input_schema: {
+    type: "object",
+    properties: { id: { type: "string" } },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
+
 export interface Attachment {
   fileName: string;
   mime: string;
@@ -158,10 +196,12 @@ export interface AskDeps {
   appendEntry: (path: string, section: string, line: string) => Promise<AppendResult>;
   saveDocument?: (folder: string[], name: string, a: Attachment) => Promise<Saved>; // nur mit Google-Anbindung
   createEvent?: (body: Record<string, unknown>) => Promise<void>;
+  findFiles?: (term: string) => Promise<FoundFile[]>;
+  sendFile?: (id: string) => Promise<string>; // schickt in Alex' Chat, gibt den Dateinamen zurück
   now: () => Date;
 }
 
-export function defaultDeps(env: Env, google: boolean): AskDeps {
+export function defaultDeps(env: Env, google: boolean, sendFile?: (id: string) => Promise<string>): AskDeps {
   return {
     client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
     readFile: (path) => readRepoFile(env, path),
@@ -170,6 +210,8 @@ export function defaultDeps(env: Env, google: boolean): AskDeps {
       ? {
           saveDocument: (folder, name, a) => saveToDrive(env, folder, name, a.mime, a.bytes),
           createEvent: (body) => insertEvent(env, body),
+          findFiles: (term) => findFiles(env, term),
+          sendFile,
         }
       : {}),
     now: () => new Date(),
@@ -218,11 +260,12 @@ export async function ask(question: string, deps: AskDeps, attachment?: Attachme
   const tools = [...TOOLS];
   if (attachment && deps.saveDocument) tools.push(SAVE_DOCUMENT);
   if (!attachment && deps.createEvent) tools.push(CREATE_EVENT);
+  if (!attachment && deps.findFiles && deps.sendFile) tools.push(FIND_FILE, SEND_FILE);
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: attachment ? attachmentContent(attachment) : question }];
   const usage: Usage = { calls: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
   let toolCalls = 0;
-  const state: ToolState = { isoDate, attachment, done: [], documentSaved: false };
+  const state: ToolState = { isoDate, attachment, done: [], documentSaved: false, sent: 0 };
   const finish = (modelText: string) => confirm(state.done, modelText);
 
   try {
@@ -287,6 +330,7 @@ interface ToolState {
   attachment?: Attachment;
   done: string[];
   documentSaved: boolean;
+  sent: number;
 }
 
 async function runTool(use: Anthropic.ToolUseBlock, deps: AskDeps, overLimit: boolean, state: ToolState): Promise<Anthropic.ToolResultBlockParam> {
@@ -334,6 +378,35 @@ async function runTool(use: Anthropic.ToolUseBlock, deps: AskDeps, overLimit: bo
     }
     state.done.push(`Im Kalender: ${checked.label}`);
     return ok(`Eingetragen: ${checked.label}`);
+  }
+  if (use.name === "find_file") {
+    if (state.attachment || !deps.findFiles) return fail("Suche nicht verfügbar.");
+    const term = (use.input as { suche?: unknown }).suche;
+    if (typeof term !== "string" || term.trim().length < 2 || term.length > 60) return fail("suche: 2–60 Zeichen.");
+    try {
+      const found = await deps.findFiles(term.trim());
+      if (!found.length) return ok("Keine Datei in der Ablage gefunden.");
+      return ok(found.map((f) => `${f.id} | ${f.name} | ${f.folder || "(Ablage)"} | ${f.modified}`).join("\n"));
+    } catch (e) {
+      if (e instanceof GoogleError) return fail(e.message);
+      throw e;
+    }
+  }
+  if (use.name === "send_file") {
+    if (state.attachment || !deps.sendFile) return fail("Senden nicht verfügbar.");
+    if (state.sent >= MAX_SENDS) return fail(`Höchstens ${MAX_SENDS} Dateien pro Nachricht.`);
+    const id = (use.input as { id?: unknown }).id;
+    if (typeof id !== "string") return fail("id als Text angeben.");
+    let name: string;
+    try {
+      name = await deps.sendFile(id);
+    } catch (e) {
+      if (e instanceof GoogleError) return fail(e.message);
+      throw e;
+    }
+    state.sent++;
+    state.done.push(`Geschickt: ${name}`);
+    return ok(`In den Chat geschickt: ${name}`);
   }
   if (use.name !== "read_file") return fail(`Unbekanntes Werkzeug: ${use.name}`);
   const path = (use.input as { path?: unknown }).path;

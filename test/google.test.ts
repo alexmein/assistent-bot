@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { checkEvent, checkFileName, checkFolder, checkGoogle, grantedScopes, saveToDrive } from "../src/google";
+import { checkEvent, checkFileName, checkFolder, checkGoogle, downloadFile, driveSearchQuery, findFiles, grantedScopes, saveToDrive } from "../src/google";
 
 describe("checkFolder", () => {
   it("akzeptiert 1–3 Ebenen", () => {
@@ -130,5 +130,68 @@ describe("grantedScopes", () => {
     expect(await grantedScopes("at")).toContain("Mail senden: JA");
     scopes("https://mail.google.com/");
     expect(await grantedScopes("at")).toContain("Mail senden: JA");
+  });
+});
+
+describe("Dateien aus der Ablage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const env = { GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", GOOGLE_REFRESH_TOKEN: "r", DRIVE_ROOT_ID: "root" } as Env;
+  // Ordnerbaum: root/Privat (privat1); fremd (außerhalb, Eltern: meinedateien)
+  const folders: Record<string, { name: string; parents?: string[] }> = {
+    privat1: { name: "Privat", parents: ["root"] },
+    fremd: { name: "Fremd", parents: ["meinedateien"] },
+    meinedateien: { name: "Meine Ablage" },
+  };
+  const files: Record<string, { name: string; mimeType: string; size?: string; parents: string[] }> = {
+    zooplus1234567: { name: "zooplus.pdf", mimeType: "application/pdf", size: "4", parents: ["privat1"] },
+    notiz123456789: { name: "Notiz", mimeType: "application/vnd.google-apps.document", parents: ["privat1"] },
+    fremd123456789: { name: "geheim.pdf", mimeType: "application/pdf", size: "4", parents: ["fremd"] },
+  };
+  function stub() {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes("oauth2")) return Response.json({ access_token: "at3", expires_in: 3600 });
+      const u = new URL(url);
+      if (u.pathname === "/drive/v3/files") {
+        return Response.json({ files: Object.entries(files).map(([id, f]) => ({ id, ...f, modifiedTime: "2026-11-02T10:00:00Z" })) });
+      }
+      const id = u.pathname.split("/")[4];
+      if (u.pathname.endsWith("/export")) return new Response("PDF-EXPORT");
+      if (u.searchParams.get("alt") === "media") return new Response("PDF");
+      if (folders[id]) return Response.json({ id, ...folders[id] });
+      if (files[id]) return Response.json({ id, ...files[id] });
+      return new Response("nicht gefunden", { status: 404 });
+    }));
+    return urls;
+  }
+
+  it("Suchabfrage escapt Anführungszeichen", () => {
+    expect(driveSearchQuery("O'Brien")).toBe("trashed = false and mimeType != 'application/vnd.google-apps.folder' and (name contains 'O\\'Brien' or fullText contains 'O\\'Brien')");
+  });
+
+  it("findet nur Dateien unterhalb der Ablage, mit Ordnerpfad", async () => {
+    stub();
+    expect(await findFiles(env, "zooplus")).toEqual([
+      { id: "zooplus1234567", name: "zooplus.pdf", folder: "Privat", modified: "2026-11-02" },
+      { id: "notiz123456789", name: "Notiz", folder: "Privat", modified: "2026-11-02" },
+    ]);
+  });
+
+  it("lädt Dateien aus der Ablage, exportiert Google-Dokumente als PDF", async () => {
+    stub();
+    const pdf = await downloadFile(env, "zooplus1234567");
+    expect(pdf.name).toBe("zooplus.pdf");
+    expect(new TextDecoder().decode(pdf.bytes)).toBe("PDF");
+    const doc = await downloadFile(env, "notiz123456789");
+    expect(doc).toMatchObject({ name: "Notiz.pdf", mime: "application/pdf" });
+    expect(new TextDecoder().decode(doc.bytes)).toBe("PDF-EXPORT");
+  });
+
+  it("verweigert Dateien außerhalb der Ablage und ungültige IDs", async () => {
+    const urls = stub();
+    await expect(downloadFile(env, "fremd123456789")).rejects.toThrow("nicht in der Assistent-Ablage");
+    expect(urls.some((u) => u.includes("alt=media"))).toBe(false);
+    await expect(downloadFile(env, "../etc")).rejects.toThrow("Ungültige Datei-ID");
   });
 });

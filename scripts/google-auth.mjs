@@ -13,6 +13,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/drive.file", // nur Dateien, die der Bot selbst anlegt
   "https://www.googleapis.com/auth/calendar.events", // Termine; der Code schreibt nur in den Hauptkalender
   "https://www.googleapis.com/auth/gmail.readonly", // Schritt 7, nur lesen
+  "https://www.googleapis.com/auth/drive.readonly", // Schritt 9: Dateien schicken; der Code liest nur in der Ablage
 ];
 
 function askHidden(prompt) {
