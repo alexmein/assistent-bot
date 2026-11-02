@@ -209,7 +209,24 @@ export async function checkGoogle(env: Env): Promise<string[]> {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     lines.push(res.ok ? `${what}: ok` : `${(await failure(what, res)).message}`);
   }
+  lines.push(await grantedScopes(token));
   return lines;
+}
+
+// Welche Rechte hat Google wirklich erteilt? Belegt für die Sicherheitsprüfung, dass der Bot keine Mails senden kann.
+const SEND_SCOPES = ["https://mail.google.com/", "gmail.send", "gmail.compose", "gmail.modify", "gmail.insert"];
+
+export async function grantedScopes(token: string): Promise<string> {
+  const res = await fetch("https://oauth2.googleapis.com/tokeninfo", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ access_token: token }),
+  });
+  if (!res.ok) return `Rechte: nicht prüfbar (HTTP ${res.status})`;
+  const scopes = (((await res.json()) as { scope?: string }).scope ?? "").split(" ").filter(Boolean);
+  const short = scopes.map((s) => s.replace("https://www.googleapis.com/auth/", ""));
+  const send = scopes.some((s) => SEND_SCOPES.some((x) => s === x || s.endsWith(`/${x}`)));
+  return `Rechte: ${short.join(", ") || "keine"} · Mail senden: ${send ? "JA – prüfen!" : "nein"}`;
 }
 
 // ---------- Gmail (nur lesen) ----------

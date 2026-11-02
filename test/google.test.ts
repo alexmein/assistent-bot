@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env";
-import { checkEvent, checkFileName, checkFolder, checkGoogle, saveToDrive } from "../src/google";
+import { checkEvent, checkFileName, checkFolder, checkGoogle, grantedScopes, saveToDrive } from "../src/google";
 
 describe("checkFolder", () => {
   it("akzeptiert 1–3 Ebenen", () => {
@@ -77,10 +77,6 @@ describe("saveToDrive", () => {
     expect(body).toContain("%PDF");
     expect((upload.init!.headers as Record<string, string>).Authorization).toBe("Bearer at");
   });
-});
-
-describe("checkGoogle", () => {
-  afterEach(() => vi.unstubAllGlobals());
   it("große Dateien (> 5 MB) per resumable upload", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -101,17 +97,38 @@ describe("checkGoogle", () => {
     const start = calls.find((c) => c.url.includes("uploadType=resumable"))!;
     expect(JSON.parse(start.init!.body as string)).toEqual({ name: "Vertrag.pdf", parents: ["eingang"] });
   });
+});
 
+describe("checkGoogle", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("meldet je Dienst ok oder den Grund von Google, nur mit GET", async () => {
     const methods: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("tokeninfo")) return Response.json({ scope: "https://www.googleapis.com/auth/gmail.readonly" });
       if (url.includes("oauth2")) return Response.json({ access_token: "at2", expires_in: 3600 });
       methods.push(init?.method ?? "GET");
       if (url.includes("calendar")) return Response.json({ error: { errors: [{ reason: "accessNotConfigured" }] } }, { status: 403 });
       return Response.json({});
     }));
     const env = { GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s", GOOGLE_REFRESH_TOKEN: "r", DRIVE_ROOT_ID: "root" } as Env;
-    expect(await checkGoogle(env)).toEqual(["Anmeldung: ok", "Kalender HTTP 403 (accessNotConfigured)", "Drive-Ablage: ok", "Gmail (lesen): ok"]);
+    expect(await checkGoogle(env)).toEqual(["Anmeldung: ok", "Kalender HTTP 403 (accessNotConfigured)", "Drive-Ablage: ok", "Gmail (lesen): ok", "Rechte: gmail.readonly · Mail senden: nein"]);
     expect(methods).toEqual(["GET", "GET", "GET"]);
+  });
+});
+
+describe("grantedScopes", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const scopes = (scope: string) => vi.stubGlobal("fetch", vi.fn(async () => Response.json({ scope })));
+
+  it("zeigt die erteilten Rechte, Senden nein", async () => {
+    scopes("https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly");
+    expect(await grantedScopes("at")).toBe("Rechte: drive.file, calendar.events, gmail.readonly · Mail senden: nein");
+  });
+
+  it("schlägt Alarm bei Senderecht", async () => {
+    scopes("https://www.googleapis.com/auth/gmail.send");
+    expect(await grantedScopes("at")).toContain("Mail senden: JA");
+    scopes("https://mail.google.com/");
+    expect(await grantedScopes("at")).toContain("Mail senden: JA");
   });
 });

@@ -21,6 +21,7 @@ export const BEREICHE = [
 const ZIELE = [...BEREICHE, "hc-system", "keiner"];
 
 const MAX_TEXT_FOR_MODEL = 12_000;
+const MAX_HTML = 300_000; // Obergrenze für die HTML-Muster (Rechenzeit bei riesigen oder präparierten Mails)
 const MAX_TODOS = 3;
 const MAX_FAILURES = 3; // danach wird die Mail als „nicht auswertbar“ gemeldet und nicht mehr versucht
 const SEEN_TTL = 30 * 24 * 3600;
@@ -92,9 +93,10 @@ export function parseMessage(m: GmailMessage, forwardAddress = ""): Mail {
   };
   if (m.payload) walk(m.payload);
 
-  const htmlText = htmlToText(html.join("\n"));
+  const rawHtml = html.join("\n").slice(0, MAX_HTML);
+  const htmlText = htmlToText(rawHtml);
   const text = (plain.join("\n").trim() || htmlText).slice(0, MAX_TEXT_FOR_MODEL);
-  const hiddenText = hiddenSnippets(html.join("\n"));
+  const hiddenText = hiddenSnippets(rawHtml);
   const date = new Date(Number(m.internalDate ?? Date.now())).toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   return {
     id: m.id,
@@ -500,7 +502,7 @@ export async function pollMail(deps: MailDeps, max = 8): Promise<MailRun> {
       analysis = await analyze(deps.client, mail, today, files);
     } catch (e) {
       const failures = Number(state ?? 0) + 1;
-      console.log(`Mail ${id}: Auswertung fehlgeschlagen (${failures}/${MAX_FAILURES}): ${e instanceof Error ? e.message : "Fehler"}`);
+      console.log(`Mail ${id}: Auswertung fehlgeschlagen (${failures}/${MAX_FAILURES}): ${logSafe(e)}`);
       if (failures < MAX_FAILURES) {
         await deps.seen.put(id, String(failures), { expirationTtl: SEEN_TTL });
         continue;
@@ -519,6 +521,12 @@ export async function pollMail(deps: MailDeps, max = 8): Promise<MailRun> {
     else run.ignored++;
   }
   return run;
+}
+
+// JSON.parse-Fehler zitieren die Modellantwort – die kann Mailinhalt enthalten (R7). Dann nur den Fehlertyp loggen.
+function logSafe(e: unknown): string {
+  if (e instanceof SyntaxError) return "SyntaxError (Antwort kein gültiges JSON)";
+  return e instanceof Error ? e.message : "Fehler";
 }
 
 async function loadAttachments(mail: Mail, deps: Pick<MailDeps, "attachment">): Promise<LoadedAttachment[]> {
