@@ -204,10 +204,15 @@ async function gmail<T>(env: Env, path: string): Promise<T> {
 }
 
 export async function listMessages(env: Env, query: string): Promise<string[]> {
-  const data = await gmail<{ messages?: { id: string }[] }>(env, `messages?maxResults=20&q=${encodeURIComponent(query)}`);
+  const data = await gmail<{ messages?: { id: string }[] }>(env, `messages?maxResults=50&q=${encodeURIComponent(query)}`);
   return (data.messages ?? []).map((m) => m.id);
 }
 
 export function getMessage<T>(env: Env, id: string): Promise<T> {
   return gmail<T>(env, `messages/${encodeURIComponent(id)}?format=full`);
+}
+
+export async function getAttachment(env: Env, messageId: string, attachmentId: string): Promise<Uint8Array> {
+  const data = await gmail<{ data: string }>(env, `messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`);
+  return Uint8Array.from(atob(data.data.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 }

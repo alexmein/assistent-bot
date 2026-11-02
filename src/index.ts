@@ -6,8 +6,8 @@ import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
-import { checkGoogle, getMessage, googleReady, listMessages } from "./google";
-import { gmailQuery, pollMail, quietTime, type GmailMessage } from "./mail";
+import { checkGoogle, getAttachment, getMessage, googleReady, listMessages, saveToDrive } from "./google";
+import { GMAIL_QUERY, pollMail, quietTime, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 
 export type { Env } from "./env";
 
@@ -65,9 +65,9 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const reason = mailNotReady(env);
     if (reason) return console.log(`Mail-Eingang aus: ${reason}`);
-    const report = await runMail(env);
-    if (report.length && env.ALLOWED_CHAT_ID && !quietTime(new Date())) {
-      await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID, truncate(mailText(report), TELEGRAM_MAX));
+    const run = await runMail(env, 8);
+    if (run.report.length && env.ALLOWED_CHAT_ID && !quietTime(new Date())) {
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID, truncate(mailText(run), TELEGRAM_MAX));
     }
   },
 };
@@ -80,25 +80,28 @@ function mailNotReady(env: Env): string | null {
   return null;
 }
 
-function runMail(env: Env): Promise<string[]> {
-  return pollMail({
-    list: () => listMessages(env, gmailQuery(env.MAIL_FORWARD_ADDRESS!)),
-    get: (id) => getMessage<GmailMessage>(env, id),
+function runMail(env: Env, max: number): Promise<MailRun> {
+  const deps = {
+    list: () => listMessages(env, GMAIL_QUERY),
+    get: (id: string) => getMessage<GmailMessage>(env, id),
+    attachment: (messageId: string, attachmentId: string) => getAttachment(env, messageId, attachmentId),
+    save: (folder: string[], name: string, f: LoadedAttachment) => saveToDrive(env, folder, name, f.mime, f.bytes),
+    forwardAddress: env.MAIL_FORWARD_ADDRESS!,
     seen: env.MAIL_SEEN!,
     client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
-    write: (path, section, line) => appendEntry(env, path, section, line, "Mail"),
+    write: (path: string, section: string, line: string) => appendEntry(env, path, section, line, "Mail"),
     now: () => new Date(),
-  });
+  };
+  return pollMail(deps, max);
 }
 
 // Nur Zählwerte, nie Inhalte: zeigt, ob die Mails im Konto liegen und welcher Filter sie findet.
 async function mailDiagnosis(env: Env): Promise<string> {
   const addr = env.MAIL_FORWARD_ADDRESS!;
   const queries: [string, string][] = [
-    ["Filter (deliveredto, inkl. Spam)", gmailQuery(addr)],
-    ["an die Adresse (to)", `to:${addr} newer_than:3d`],
-    ["überall inkl. Spam (to)", `in:anywhere to:${addr} newer_than:3d`],
-    ["Konto gesamt, 1 Tag", "newer_than:1d"],
+    ["Filter (ganzes Konto, 3 Tage)", GMAIL_QUERY],
+    ["davon an +assistent", `${GMAIL_QUERY} deliveredto:${addr}`],
+    ["davon Spam", `${GMAIL_QUERY} in:spam`],
   ];
   const lines = [`Weiterleitungsadresse: ${addr}`];
   for (const [label, q] of queries) {
@@ -111,8 +114,9 @@ async function mailDiagnosis(env: Env): Promise<string> {
   return lines.join("\n");
 }
 
-function mailText(report: string[]): string {
-  return [`Mail-Eingang (${report.length}):`, ...report.map((r) => `- ${r}`)].join("\n");
+function mailText(run: MailRun): string {
+  const ignored = run.ignored ? `\n(${run.ignored} ohne Ablage: Werbung, Systemmails, Spam)` : "";
+  return [`Mail-Eingang (${run.report.length}):`, ...run.report.map((r) => `- ${r}`)].join("\n") + ignored;
 }
 
 const HELP =
@@ -130,8 +134,10 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     if (reason) return `Mail-Eingang noch nicht bereit: ${reason}.`;
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
     try {
-      const report = await runMail(env);
-      return report.length ? mailText(report) : `Keine neuen Mails.\n${await mailDiagnosis(env)}`;
+      // Höchstens 3 pro Aufruf, damit Telegram nicht auf die Antwort wartet und neu zustellt; den Rest holt der Cron.
+      const run = await runMail(env, 3);
+      if (run.report.length) return mailText(run);
+      return run.ignored ? mailText(run) : `Keine neuen Mails.\n${await mailDiagnosis(env)}`;
     } catch (e) {
       return `Mail-Abruf fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }
