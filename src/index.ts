@@ -79,7 +79,7 @@ export default {
 
 function jobs(env: Env): Job[] {
   const list: Job[] = [];
-  if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.ANTHROPIC_API_KEY && env.STATE) {
+  if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.STATE) {
     // Dienstags kommt bis Schritt 5 (Wochenbriefing) ebenfalls das Tagesbriefing.
     list.push({
       name: "tagesbriefing",
@@ -117,7 +117,6 @@ function briefing(env: Env, sinceIso: string): Promise<string> {
       readFile: (path) => readRepoFile(env, path),
       commitsSince: (iso) => commitMessagesSince(env, iso),
       weather: () => fetchWeather(),
-      client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
       now: () => new Date(),
     },
     sinceIso,
@@ -183,7 +182,6 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   if (command === "/check") return googleReady(env) ? (await checkGoogle(env)).join("\n") : "Google ist noch nicht eingerichtet.";
   if (command === "/briefing") {
     // Vorschau: zählt nicht als Briefing, das nächste geplante bringt dieselben Neuigkeiten noch einmal.
-    if (!env.ANTHROPIC_API_KEY) return "Für das Briefing fehlt der Anthropic-Schlüssel.";
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
     const since = (await env.STATE?.get(LAST_BRIEFING)) ?? hoursAgo(24);
     try {
