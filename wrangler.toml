@@ -20,7 +20,6 @@ id = "6967f08f5b3a4bb7b698f4db2de2f52b"
 [vars]
 GITHUB_REPO = "alexmein/Assistent"
 DRIVE_ROOT_ID = "1sGrt7mDdj2E-525nJnMSLBpkwi0lcseN"
-PROBE_AT = "21:00" # nur für den Test von Phase 3 Schritt 1, danach entfernen
 
 # Secrets (nie hier, nur per `wrangler secret put`):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN, ANTHROPIC_API_KEY,
