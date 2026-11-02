@@ -6,10 +6,11 @@ import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { buildBriefing, fetchWeather } from "./briefing";
-import { commitMessagesSince, readRepoFile } from "./github";
+import { commitMessagesSince, readRepoFile, writeTriageFile } from "./github";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 import { sendDue } from "./reminders";
+import { prepareTriage, renderTriage, telegramLine } from "./triage";
 import { hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
@@ -71,6 +72,7 @@ export default {
     if (env.STATE && env.ALLOWED_CHAT_ID) {
       await sendDue(env.STATE, now, (text) => sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text));
       await runDue(jobs(env), now, env.STATE);
+      if (env.ANTHROPIC_API_KEY && env.GITHUB_TOKEN) await requestedTriage(env);
     } else console.log("Zeitpläne aus: KV STATE oder ALLOWED_CHAT_ID fehlt");
     if (now.getUTCMinutes() % 15 !== 0) return;
     const reason = mailNotReady(env);
@@ -97,6 +99,16 @@ function jobs(env: Env): Job[] {
       },
     });
   }
+  if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.ANTHROPIC_API_KEY && env.STATE) {
+    list.push({
+      name: "triage",
+      at: (day) => (day === "Mon" ? hm(8, 45) : null),
+      run: async () => {
+        const line = await triage(env);
+        await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, line);
+      },
+    });
+  }
   const probe = parseHm(env.PROBE_AT);
   if (probe !== null && env.ALLOWED_CHAT_ID) {
     // Ausdrücklich terminiert wie eine Erinnerung → geht auch in der Ruhezeit durch.
@@ -111,6 +123,40 @@ function jobs(env: Env): Job[] {
 }
 
 const LAST_BRIEFING = "briefing:last";
+const LAST_TRIAGE = "triage:last";
+const TRIAGE_REQUESTED = "triage:requested";
+
+async function requestedTriage(env: Env): Promise<void> {
+  if (!(await env.STATE!.get(TRIAGE_REQUESTED))) return;
+  await env.STATE!.delete(TRIAGE_REQUESTED); // vorher löschen: lieber einmal neu anfordern als doppelt laufen
+  let text: string;
+  try {
+    text = await triage(env);
+  } catch (e) {
+    text = `Triage-Vorbereitung fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+  }
+  await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text);
+}
+
+// Bereitet die Triage vor, schreibt triage/JJJJ-MM-TT.md (Commit „via Briefing“) und gibt die Telegram-Zeile zurück.
+async function triage(env: Env): Promise<string> {
+  const started = new Date();
+  const since = (await env.STATE!.get(LAST_TRIAGE)) ?? new Date(started.getTime() - 14 * 86_400_000).toISOString();
+  const v = await prepareTriage(
+    {
+      readFile: (path) => readRepoFile(env, path),
+      commitsSince: (iso) => commitMessagesSince(env, iso),
+      client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 120_000 }),
+      now: () => started,
+    },
+    since,
+  );
+  const date = started.toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
+  const path = `triage/${date}.md`;
+  await writeTriageFile(env, path, renderTriage(v, date), `${path}: Vorbereitung (via Briefing)`);
+  await env.STATE!.put(LAST_TRIAGE, started.toISOString());
+  return `${telegramLine(v)} (${path})`;
+}
 
 function hoursAgo(h: number): string {
   return new Date(Date.now() - h * 3600_000).toISOString();
@@ -176,7 +222,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /triage – Triage jetzt vorbereiten (sonst Montag 8:45). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -194,6 +240,13 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     } catch (e) {
       return `Briefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }
+  }
+  if (command === "/triage") {
+    // Vorbereitung jetzt (z. B. vor einer Triage außer der Reihe); schreibt die Datei für heute.
+    // Läuft im nächsten Cron (bis 5 Min.): Sonnet braucht womöglich länger, als Telegram auf die Antwort wartet.
+    if (!env.ANTHROPIC_API_KEY || !env.STATE) return "Für die Triage fehlen Zugänge (ANTHROPIC_API_KEY / STATE).";
+    await env.STATE.put(TRIAGE_REQUESTED, "1", { expirationTtl: 3600 });
+    return "Triage wird vorbereitet – Meldung in den nächsten Minuten.";
   }
   if (command === "/mail") {
     const reason = mailNotReady(env);
