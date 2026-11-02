@@ -5,10 +5,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
-import { readRepoFile } from "./github";
+import { buildBriefing, fetchWeather } from "./briefing";
+import { commitMessagesSince, readRepoFile } from "./github";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
-import { parseHm, quietTime, runDue, type Job } from "./schedule";
+import { hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
 
@@ -78,6 +79,19 @@ export default {
 
 function jobs(env: Env): Job[] {
   const list: Job[] = [];
+  if (env.ALLOWED_CHAT_ID && env.GITHUB_TOKEN && env.ANTHROPIC_API_KEY && env.STATE) {
+    // Dienstags kommt bis Schritt 5 (Wochenbriefing) ebenfalls das Tagesbriefing.
+    list.push({
+      name: "tagesbriefing",
+      at: (day) => (day === "Sat" || day === "Sun" ? hm(10, 30) : hm(8, 30)),
+      run: async () => {
+        const started = new Date().toISOString();
+        const text = await briefing(env, (await env.STATE!.get(LAST_BRIEFING)) ?? hoursAgo(24));
+        await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, truncate(text, TELEGRAM_MAX));
+        await env.STATE!.put(LAST_BRIEFING, started); // erst nach dem Versand: sonst fehlt Neues im nächsten Briefing
+      },
+    });
+  }
   const probe = parseHm(env.PROBE_AT);
   if (probe !== null && env.ALLOWED_CHAT_ID) {
     // Ausdrücklich terminiert wie eine Erinnerung → geht auch in der Ruhezeit durch.
@@ -89,6 +103,25 @@ function jobs(env: Env): Job[] {
     });
   }
   return list;
+}
+
+const LAST_BRIEFING = "briefing:last";
+
+function hoursAgo(h: number): string {
+  return new Date(Date.now() - h * 3600_000).toISOString();
+}
+
+function briefing(env: Env, sinceIso: string): Promise<string> {
+  return buildBriefing(
+    {
+      readFile: (path) => readRepoFile(env, path),
+      commitsSince: (iso) => commitMessagesSince(env, iso),
+      weather: () => fetchWeather(),
+      client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
+      now: () => new Date(),
+    },
+    sinceIso,
+  );
 }
 
 function mailNotReady(env: Env): string | null {
@@ -139,7 +172,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -148,6 +181,17 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
   if (command === "/status") return statusReply(env);
   if (command === "/check") return googleReady(env) ? (await checkGoogle(env)).join("\n") : "Google ist noch nicht eingerichtet.";
+  if (command === "/briefing") {
+    // Vorschau: zählt nicht als Briefing, das nächste geplante bringt dieselben Neuigkeiten noch einmal.
+    if (!env.ANTHROPIC_API_KEY) return "Für das Briefing fehlt der Anthropic-Schlüssel.";
+    await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
+    const since = (await env.STATE?.get(LAST_BRIEFING)) ?? hoursAgo(24);
+    try {
+      return truncate(await briefing(env, since), TELEGRAM_MAX);
+    } catch (e) {
+      return `Briefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+    }
+  }
   if (command === "/mail") {
     const reason = mailNotReady(env);
     if (reason) return `Mail-Eingang noch nicht bereit: ${reason}.`;
