@@ -205,7 +205,14 @@ const UMFELD_REQUESTED = "umfeld:requested";
 
 async function umfeld(env: Env): Promise<number> {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
-  const list = await research(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 240_000 }), today);
+  let list;
+  try {
+    list = await research(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 240_000 }), today);
+  } catch (e) {
+    // Für Rückfragen beim Anthropic-Support: Status, Typ und Request-ID, keine Inhalte.
+    if (e instanceof Anthropic.APIError) console.log(`Umfeld API-Fehler ${JSON.stringify({ status: e.status, type: e.type, requestId: e.requestID })}`);
+    throw e;
+  }
   await env.STATE!.put(UMFELD_KEY, JSON.stringify(list), { expirationTtl: 21 * 86_400 });
   return list.length;
 }
