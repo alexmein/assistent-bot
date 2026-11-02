@@ -170,3 +170,25 @@ export async function insertEvent(env: Env, body: Record<string, unknown>): Prom
   if (!res.ok) throw await failure("Kalender", res);
   console.log("Kalender: Termin eingetragen");
 }
+
+// Nur lesend: prüft Anmeldung, Kalender, Ablage-Ordner und Gmail. Für /check.
+export async function checkGoogle(env: Env): Promise<string[]> {
+  const lines: string[] = [];
+  let token: string;
+  try {
+    token = await accessToken(env);
+    lines.push("Anmeldung: ok");
+  } catch (e) {
+    return [`Anmeldung: ${e instanceof Error ? e.message : "Fehler"}`];
+  }
+  const probes: [string, string][] = [
+    ["Kalender", "https://www.googleapis.com/calendar/v3/calendars/primary"],
+    ["Drive-Ablage", `https://www.googleapis.com/drive/v3/files/${env.DRIVE_ROOT_ID}?fields=id`],
+    ["Gmail (lesen)", "https://gmail.googleapis.com/gmail/v1/users/me/profile"],
+  ];
+  for (const [what, url] of probes) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    lines.push(res.ok ? `${what}: ok` : `${(await failure(what, res)).message}`);
+  }
+  return lines;
+}

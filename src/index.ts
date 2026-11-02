@@ -4,7 +4,7 @@
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
-import { googleReady } from "./google";
+import { checkGoogle, googleReady } from "./google";
 
 export type { Env } from "./env";
 
@@ -60,7 +60,7 @@ export default {
 };
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -68,6 +68,7 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   const command = text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
   if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
   if (command === "/status") return statusReply(env);
+  if (command === "/check") return googleReady(env) ? (await checkGoogle(env)).join("\n") : "Google ist noch nicht eingerichtet.";
   if (command.startsWith("/")) return `Unbekannter Befehl. ${HELP}`;
   if (!env.GITHUB_TOKEN) return "Mir fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
   if (!env.ANTHROPIC_API_KEY) return "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY).";
