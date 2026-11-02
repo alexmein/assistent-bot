@@ -91,6 +91,26 @@ function runMail(env: Env): Promise<string[]> {
   });
 }
 
+// Nur Zählwerte, nie Inhalte: zeigt, ob die Mails im Konto liegen und welcher Filter sie findet.
+async function mailDiagnosis(env: Env): Promise<string> {
+  const addr = env.MAIL_FORWARD_ADDRESS!;
+  const queries: [string, string][] = [
+    ["Filter (deliveredto, inkl. Spam)", gmailQuery(addr)],
+    ["an die Adresse (to)", `to:${addr} newer_than:3d`],
+    ["überall inkl. Spam (to)", `in:anywhere to:${addr} newer_than:3d`],
+    ["Konto gesamt, 1 Tag", "newer_than:1d"],
+  ];
+  const lines = [`Weiterleitungsadresse: ${addr}`];
+  for (const [label, q] of queries) {
+    try {
+      lines.push(`${label}: ${(await listMessages(env, q)).length}`);
+    } catch (e) {
+      lines.push(`${label}: Fehler ${e instanceof Error ? e.message : ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function mailText(report: string[]): string {
   return [`Mail-Eingang (${report.length}):`, ...report.map((r) => `- ${r}`)].join("\n");
 }
@@ -111,7 +131,7 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
     try {
       const report = await runMail(env);
-      return report.length ? mailText(report) : "Keine neuen Mails.";
+      return report.length ? mailText(report) : `Keine neuen Mails.\n${await mailDiagnosis(env)}`;
     } catch (e) {
       return `Mail-Abruf fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }

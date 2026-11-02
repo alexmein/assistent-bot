@@ -88,7 +88,7 @@ describe("parseMessage", () => {
     expect(senderName("max@x.de")).toBe("max@x.de");
     expect(htmlToText("<style>p{}</style><p>A&amp;B&nbsp;C</p><p>D</p>")).toBe("A&B C\nD");
     expect(hiddenSnippets('<span style="display:none">Vorschau</span><span style="color:red">sichtbar</span>')).toEqual(["Vorschau"]);
-    expect(gmailQuery("alex+assistent@example.com")).toBe("deliveredto:alex+assistent@example.com newer_than:3d");
+    expect(gmailQuery("alex+assistent@example.com")).toBe("in:anywhere -in:trash deliveredto:alex+assistent@example.com newer_than:3d");
   });
 });
 

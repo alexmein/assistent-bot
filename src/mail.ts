@@ -378,8 +378,9 @@ export async function pollMail(deps: MailDeps, max = 5): Promise<string[]> {
 
 // ---------- Gmail-Anbindung ----------
 
+// Inklusive Spam: Weiterleitungen fallen oft durch SPF/DMARC und landen dort (Test 2026-11-02). Nur diese Adresse.
 export function gmailQuery(address: string): string {
-  return `deliveredto:${address} newer_than:3d`;
+  return `in:anywhere -in:trash deliveredto:${address} newer_than:3d`;
 }
 
 // Ruhezeiten (CLAUDE.md §3): täglich 0–8 Uhr, Sa/So bis 10:30, Montag ab 13 Uhr.
