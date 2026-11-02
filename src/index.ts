@@ -9,6 +9,7 @@ import { buildBriefing, fetchWeather } from "./briefing";
 import { commitMessagesSince, readRepoFile } from "./github";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
+import { sendDue } from "./reminders";
 import { hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
@@ -63,11 +64,15 @@ export default {
     return ok();
   },
 
-  // Cron alle 15 Minuten: geplante Läufe (Berliner Zeit), dann Mail-Eingang. Meldung zum Mail-Eingang auf Telegram nur
-  // außerhalb der Ruhezeiten; abgelegt wird immer.
+  // Cron alle 5 Minuten: Erinnerungen und geplante Läufe (Berliner Zeit); Mail-Eingang nur jede Viertelstunde.
+  // Meldung zum Mail-Eingang auf Telegram nur außerhalb der Ruhezeiten; abgelegt wird immer.
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    if (env.STATE) await runDue(jobs(env), new Date(controller.scheduledTime), env.STATE);
-    else console.log("Zeitpläne aus: KV STATE fehlt");
+    const now = new Date(controller.scheduledTime);
+    if (env.STATE && env.ALLOWED_CHAT_ID) {
+      await sendDue(env.STATE, now, (text) => sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text));
+      await runDue(jobs(env), now, env.STATE);
+    } else console.log("Zeitpläne aus: KV STATE oder ALLOWED_CHAT_ID fehlt");
+    if (now.getUTCMinutes() % 15 !== 0) return;
     const reason = mailNotReady(env);
     if (reason) return console.log(`Mail-Eingang aus: ${reason}`);
     const run = await runMail(env, 8);
@@ -171,7 +176,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";

@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendEntry, checkLine, type AppendResult } from "./append";
 import type { Env } from "./env";
 import { readRepoFile, type FileResult } from "./github";
+import { addReminder, checkReminder, label, listReminders, ReminderError, type Reminder } from "./reminders";
 import {
   checkEvent,
   checkFileName,
@@ -46,11 +47,16 @@ Erfassen (CLAUDE.md §1 Routing, §2 Autonomie, §4):
 - Neues Thema, für das kein Bereich passt → zusätzlich docs/eingang.md › „## Vorschläge für neue Bereiche“ als „- [P] Bereich <name>: <Grund>“.
 - Will Alex etwas erledigen, ändern, umformulieren, verschieben oder löschen: nicht möglich – sag, dass das in die Triage am Mac gehört, und lege es als Zeile in docs/status.md › „## → am Mac“ ab.
 - Keine Konto-, Ausweis-, Vertrags- oder Steuernummern, keine Passwörter, keine Beträge aus Kontoauszügen (R7).
-- Erinnerungen per Push kann der Bot noch nicht (kommt in Phase 3); die Frist steht im To-do.
 - Die Bestätigungen („Abgelegt: …“, „In Drive: …“, „Im Kalender: …“) erzeugt das Programm selbst aus dem, was wirklich gespeichert wurde. Danach schreibst du nichts – außer bei Unsicherheit (Zuordnung unklar, Frist oder Priorität geraten, mehrere Deutungen möglich), dann ein kurzer Satz dazu. Keine Wiederholung dessen, was erledigt wurde, keine Erklärungen des Offensichtlichen. Schreib nie „abgelegt“, „eingetragen“ oder „gespeichert“, wenn das Werkzeug nicht erfolgreich war.
 
 Dateien schicken (nur wenn find_file verfügbar ist):
 - Will Alex eine Datei haben („schick mir die zooplus-Kündigung“), suche mit find_file (kurzer Suchbegriff, z. B. „zooplus“) und schicke die passende mit send_file in diesen Chat. Danach kein Text – die Datei im Chat ist die Bestätigung. Bei mehreren gleich passenden Treffern nichts schicken, sondern die Liste kurz nennen und fragen, welche; kein Treffer → kurz sagen. Weiterleiten an andere macht Alex selbst; Mails versenden kannst du nicht.
+
+Erinnerungen per Push (nur wenn set_reminder verfügbar ist; Entscheidung 27):
+- Will Alex erinnert werden („erinnere mich …“), set_reminder mit Datum und Uhrzeit in Berliner Zeit. Relative Angaben („in 30 Minuten“, „morgen früh“ = 8:00) von Jetzt aus umrechnen.
+- Bezieht sich die Erinnerung auf eine Frist und Alex nennt keine Uhrzeit: 1 Std. vor der Frist; eine Frist ohne Uhrzeit gilt als 18:00, also 17:00 am Fristtag. Ohne jede Zeitangabe für einen Tag: 9:00.
+- Nur die Erinnerung anlegen, kein zusätzliches To-do – außer Alex sagt es.
+- Anzeigen: list_reminders. Löschen: list_reminders, dann cancel_reminder mit der passenden id; bei mehreren möglichen nachfragen.
 
 Termine (nur wenn create_event verfügbar ist):
 - Nennt Alex selbst einen Termin, trag ihn mit create_event in seinen Kalender ein (Europe/Berlin; ohne Uhrzeit ganztägig, ohne Ende eine Stunde). Ein To-do nur, wenn es zusätzlich etwas zu tun gibt.
@@ -150,6 +156,39 @@ const SEND_FILE: Anthropic.Tool = {
   },
 };
 
+const REMINDER_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "set_reminder",
+    description: "Schickt Alex zum Zeitpunkt (Berliner Zeit) eine Push-Nachricht mit dem Text, auch in Ruhezeiten.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "kurz, z. B. Makler anrufen" },
+        date: { type: "string", description: "JJJJ-MM-TT" },
+        time: { type: "string", description: "HH:MM" },
+      },
+      required: ["text", "date", "time"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_reminders",
+    description: "Zeigt Alex' offene Erinnerungen (id, Zeitpunkt, Text).",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "cancel_reminder",
+    description: "Löscht eine offene Erinnerung. id aus list_reminders.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+  },
+];
+
+export interface ReminderDeps {
+  add: (at: Date, text: string) => Promise<Reminder>;
+  list: () => Promise<Reminder[]>;
+  cancel: (id: string) => Promise<void>;
+}
+
 export interface Attachment {
   fileName: string;
   mime: string;
@@ -198,6 +237,7 @@ export interface AskDeps {
   createEvent?: (body: Record<string, unknown>) => Promise<void>;
   findFiles?: (term: string) => Promise<FoundFile[]>;
   sendFile?: (id: string) => Promise<string>; // schickt in Alex' Chat, gibt den Dateinamen zurück
+  reminders?: ReminderDeps;
   now: () => Date;
 }
 
@@ -212,6 +252,15 @@ export function defaultDeps(env: Env, google: boolean, sendFile?: (id: string) =
           createEvent: (body) => insertEvent(env, body),
           findFiles: (term) => findFiles(env, term),
           sendFile,
+        }
+      : {}),
+    ...(env.STATE
+      ? {
+          reminders: {
+            add: (at, text) => addReminder(env.STATE!, at, text),
+            list: () => listReminders(env.STATE!),
+            cancel: (id) => env.STATE!.delete(id),
+          },
         }
       : {}),
     now: () => new Date(),
@@ -261,6 +310,7 @@ export async function ask(question: string, deps: AskDeps, attachment?: Attachme
   if (attachment && deps.saveDocument) tools.push(SAVE_DOCUMENT);
   if (!attachment && deps.createEvent) tools.push(CREATE_EVENT);
   if (!attachment && deps.findFiles && deps.sendFile) tools.push(FIND_FILE, SEND_FILE);
+  if (!attachment && deps.reminders) tools.push(...REMINDER_TOOLS);
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: attachment ? attachmentContent(attachment) : question }];
   const usage: Usage = { calls: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
@@ -379,6 +429,31 @@ async function runTool(use: Anthropic.ToolUseBlock, deps: AskDeps, overLimit: bo
     }
     state.done.push(`Im Kalender: ${checked.label}`);
     return ok(`Eingetragen: ${checked.label}`);
+  }
+  if (use.name === "set_reminder" || use.name === "list_reminders" || use.name === "cancel_reminder") {
+    if (state.attachment || !deps.reminders) return fail("Erinnerungen nicht verfügbar.");
+    try {
+      if (use.name === "list_reminders") {
+        const all = await deps.reminders.list();
+        return ok(all.length ? all.map((r) => `${r.id} | ${label(new Date(r.at))} | ${r.text}`).join("\n") : "Keine offenen Erinnerungen.");
+      }
+      if (use.name === "cancel_reminder") {
+        const id = (use.input as { id?: unknown }).id;
+        const target = (await deps.reminders.list()).find((r) => r.id === id);
+        if (!target) return fail("Keine Erinnerung mit dieser id.");
+        await deps.reminders.cancel(target.id);
+        state.done.push(`Erinnerung gelöscht: ${label(new Date(target.at))} – ${target.text}`);
+        return ok("Gelöscht.");
+      }
+      const checked = checkReminder(use.input as { date?: unknown; time?: unknown; text?: unknown }, deps.now());
+      if (!checked.ok) return fail(checked.error);
+      await deps.reminders.add(checked.at, checked.text);
+      state.done.push(`Erinnerung: ${label(checked.at)} – ${checked.text}`);
+      return ok(`Gesetzt: ${label(checked.at)}`);
+    } catch (e) {
+      if (e instanceof ReminderError) return fail(e.message);
+      throw e;
+    }
   }
   if (use.name === "find_file") {
     if (state.attachment || !deps.findFiles) return fail("Suche nicht verfügbar.");

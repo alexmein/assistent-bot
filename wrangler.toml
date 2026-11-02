@@ -3,9 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 workers_dev = true
 
-# Alle 15 Minuten: geplante Läufe (Berliner Zeit, src/schedule.ts) und Mail-Eingang
+# Alle 5 Minuten: Erinnerungen und geplante Läufe (Berliner Zeit, src/schedule.ts); Mail-Eingang jede Viertelstunde
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/5 * * * *"]
 
 # Verarbeitete Gmail-IDs (30 Tage), damit keine Mail doppelt abgelegt wird
 [[kv_namespaces]]

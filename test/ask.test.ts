@@ -351,3 +351,33 @@ describe("Dateien schicken (Entscheidung 45)", () => {
     expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true });
   });
 });
+
+describe("Erinnerungen (Entscheidung 27)", () => {
+  const call = (name: string, input: unknown, id = "x") => ({ content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use", usage });
+  const withReminders = (responses: unknown[]) => {
+    const x = deps(responses);
+    const list = [{ id: "reminder:1:a", at: "2026-11-04T16:00:00.000Z", text: "Bewerbung" }];
+    const reminders = { add: vi.fn(async (at: Date, text: string) => ({ id: "r", at: at.toISOString(), text })), list: vi.fn(async () => list), cancel: vi.fn(async () => {}) };
+    x.d.reminders = reminders;
+    return { ...x, reminders };
+  };
+
+  it("setzt eine Erinnerung und bestätigt Zeitpunkt aus dem Code", async () => {
+    const { d, reminders } = withReminders([call("set_reminder", { text: "Makler anrufen", date: "2026-11-03", time: "14:00" }), text("")]);
+    expect(await ask("erinnere mich morgen 14 Uhr an den Makler", d)).toBe("Erinnerung: Di 03.11. 14:00 – Makler anrufen");
+    expect(reminders.add).toHaveBeenCalledWith(new Date("2026-11-03T13:00:00Z"), "Makler anrufen");
+  });
+
+  it("verweigert Vergangenes", async () => {
+    const { d, create, reminders } = withReminders([call("set_reminder", { text: "zu spät", date: "2026-11-01", time: "10:00" }), text("Liegt in der Vergangenheit.")]);
+    await ask("x", d);
+    expect(reminders.add).not.toHaveBeenCalled();
+    expect(lastResults(create, 1)[0]).toMatchObject({ is_error: true });
+  });
+
+  it("löscht nur vorhandene ids", async () => {
+    const { d, reminders } = withReminders([call("cancel_reminder", { id: "reminder:1:a" }), call("cancel_reminder", { id: "erfunden" }, "y"), text("")]);
+    expect(await ask("lösch die Bewerbungs-Erinnerung", d)).toBe("Erinnerung gelöscht: Mi 04.11. 17:00 – Bewerbung");
+    expect(reminders.cancel).toHaveBeenCalledOnce();
+  });
+});
