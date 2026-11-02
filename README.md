@@ -3,7 +3,7 @@
 Telegram-Bot des persönlichen Assistenten. Läuft als Cloudflare Worker.
 Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `docs/bauplan.md`, Entscheidungen 38/39).
 
-## Stand: Phase 2 abgeschlossen (Schritte 1–8); Nachtrag Schritt 9 offen
+## Stand: Phase 2 abgeschlossen (Schritte 1–9), Phase 3 gebaut (Abschluss nach der ersten echten Woche)
 - `POST /telegram` mit Telegram-Webhook-Secret; alles andere 404/401.
 - Antwortet nur im privaten Chat mit `ALLOWED_CHAT_ID`; fremde Chats werden ignoriert (nur die ID wird geloggt, nie Text).
 - `/status` liest `docs/status.md` über die GitHub-API (`GITHUB_REPO` in `wrangler.toml`). `/start` zeigt die Hilfe.
@@ -25,6 +25,20 @@ Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `do
   aus der Mail wird nichts übernommen. Anhänge bis 5 MB (höchstens 3) → Drive mit Verweis. Meldung auf Telegram nur
   außerhalb der Ruhezeiten.
 - `/check` prüft Google nur lesend und zeigt die erteilten Rechte (Mail senden muss „nein“ sein).
+- Dateien auf Anfrage (`find_file`/`send_file`, Entscheidung 45): nur aus der Drive-Ablage, nur in Alex' Chat.
+
+### Phase 3 – Zeitpläne (`src/schedule.ts`, Cron alle 5 Minuten, Berliner Zeit, Ruhezeiten, jeder Lauf einmal)
+| Wann | Was | Datei |
+|---|---|---|
+| alle 5 Min. | fällige Push-Erinnerungen (KV `STATE`, auch in Ruhezeiten) | `src/reminders.ts` |
+| alle 15 Min. | Mail-Eingang | `src/mail.ts` |
+| tägl. 8:30, Sa/So 10:30 (nicht Di) | Tagesbriefing, ohne Modell | `src/briefing.ts`, `src/kalender.ts` |
+| Di 7:30 / 8:30 | Umfeld-Recherche (Haiku + Websuche) / Wochenbriefing | `src/umfeld.ts`, `src/briefing.ts` |
+| Mo 8:15 | Meta-Prüfung, Cloud-Teil (Sonnet 5.5, GitHub lesend) | `src/meta.ts` |
+| Mo–Fr 8:45 | Triage-Vorbereitung → `triage/JJJJ-MM-TT.md` (Sonnet 5.5) | `src/triage.ts` |
+
+Befehle: `/briefing`, `/woche` (Vorschauen), `/triage`, `/umfeld`, `/meta` (laufen im nächsten Cron), `/mail`.
+Ganze Dateien schreibt der Bot nur unter `triage/` (`writeTriageFile`); sonst nur Anhängen.
 - Termine: `create_event` nur bei Text von Alex, nie bei Dateien (CLAUDE.md §2); schreibt nur in den Hauptkalender. Verbrauch und Kosten je Frage stehen im Log (`Verbrauch {...}`), ohne Frage- oder Antworttext.
 
 ## Secrets (nur per `wrangler secret put`, nie im Repo)
@@ -36,6 +50,7 @@ Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `do
 | `ANTHROPIC_API_KEY` | Anthropic-Konsole, Schlüssel `assistent-bot` (mit Ausgabenlimit) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` | `node scripts/google-auth.mjs` (fragt verdeckt ab, setzt alle drei und `DRIVE_ROOT_ID` in `wrangler.toml`) |
 | `MAIL_FORWARD_ADDRESS` | Plus-Adresse, an die iCloud weiterleitet (`…+assistent@…`) |
+| `HC_GITHUB_TOKEN` | Fine-grained Token, Owner `hungry-collective`, nur hc-system/-kitchen/-orders/-shopify, Contents: Read-only |
 | `GITHUB_TOKEN` | Fine-grained Token von `alexmein`, nur Repo `Assistent`, Contents: Read and write |
 
 ## Befehle
