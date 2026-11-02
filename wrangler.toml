@@ -24,4 +24,5 @@ DRIVE_ROOT_ID = "1sGrt7mDdj2E-525nJnMSLBpkwi0lcseN"
 # Secrets (nie hier, nur per `wrangler secret put`):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN, ANTHROPIC_API_KEY,
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN,
-#   MAIL_FORWARD_ADDRESS (Plus-Adresse, an die iCloud weiterleitet)
+#   MAIL_FORWARD_ADDRESS (Plus-Adresse, an die iCloud weiterleitet),
+#   HC_GITHUB_TOKEN (nur lesen: hc-system, hc-kitchen, hc-orders, hc-shopify)

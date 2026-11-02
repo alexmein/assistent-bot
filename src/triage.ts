@@ -125,7 +125,7 @@ function cut(text: string, max: number): string {
 }
 
 // Format nach §6.2: nummeriert, Punkt · Datei · Empfehlung mit einer Zeile Begründung.
-export function renderTriage(v: Vorbereitung, date: string): string {
+export function renderTriage(v: Vorbereitung, date: string, meta?: string): string {
   const lines = [
     `# Triage ${date}`,
     "",
@@ -139,7 +139,7 @@ export function renderTriage(v: Vorbereitung, date: string): string {
   });
   if (!v.punkte.length) lines.push("Nichts zu entscheiden.");
   if (v.technik) lines.push("", `**Technik (eine Frage):** ${v.technik}`);
-  lines.push("", "## Meta-Prüfung", "_(kommt mit Phase 3 Schritt 6)_", "");
+  lines.push("", "## Meta-Prüfung", meta ?? "_Keine Meta-Prüfung dieser Woche (läuft montags 8:15)._", "");
   return lines.join("\n");
 }
 

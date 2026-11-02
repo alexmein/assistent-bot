@@ -4,6 +4,7 @@
 
 import type { FileResult } from "./github";
 import type { CalendarItem } from "./google";
+import { metaLines, type MetaResult } from "./meta";
 import { dayLines, weekLines, type Ereignis } from "./umfeld";
 import { calendarLines, periodsFor } from "./kalender";
 import { BEREICHE } from "./mail";
@@ -277,6 +278,7 @@ export interface BriefingDeps {
   weather: () => Promise<string>;
   umfeld?: () => Promise<Ereignis[]>; // letzte Recherche (KV)
   calendar?: (fromIso: string, toIso: string) => Promise<CalendarItem[]>; // nur Wochenbriefing
+  meta?: () => Promise<MetaResult | null>; // nur Wochenbriefing
   now: () => Date;
 }
 
@@ -325,6 +327,7 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string, weekly
   if (week) {
     add("Triage", triageLines(triageFile, week.commits));
     add("Selbstkontrolle (7 Tage)", selfCheck(week.commits, repoLines));
+    if (deps.meta) add("Meta-Prüfung", metaLines(await deps.meta().catch(() => null), today));
   }
   if (!kalender.ok) blocks.push("(Nicht lesbar: docs/kalender.md)");
   const head = weekly ? `Wochenbriefing KW ${isoWeek(today)} · ${shortDate(today)}–${shortDate(addDays(today, 6))}\n${weather}` : `${shortDate(today)}\n${weather}`;

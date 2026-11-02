@@ -5,8 +5,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
-import { buildBriefing, fetchWeather } from "./briefing";
-import { commitMessagesSince, readRepoFile, writeTriageFile } from "./github";
+import { buildBriefing, fetchWeather, selfCheck, type RepoLine } from "./briefing";
+import { commitMessagesSince, readRepoFile, repoCommits, repoFile, writeTriageFile } from "./github";
+import { HC_REPOS, META_KEY, renderMeta, runMeta, type MetaResult } from "./meta";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listEvents, listMessages, saveToDrive } from "./google";
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 import { sendDue } from "./reminders";
@@ -75,6 +76,7 @@ export default {
       await runDue(jobs(env), now, env.STATE);
       if (env.ANTHROPIC_API_KEY && env.GITHUB_TOKEN) await requestedTriage(env);
       if (env.ANTHROPIC_API_KEY) await requestedUmfeld(env);
+      if (env.ANTHROPIC_API_KEY && env.GITHUB_TOKEN && env.HC_GITHUB_TOKEN) await requestedMeta(env);
     } else console.log("Zeitpläne aus: KV STATE oder ALLOWED_CHAT_ID fehlt");
     if (now.getUTCMinutes() % 15 !== 0) return;
     const reason = mailNotReady(env);
@@ -104,6 +106,10 @@ function jobs(env: Env): Job[] {
     list.push({ name: "wochenbriefing", at: (day) => (day === "Tue" ? hm(8, 30) : null), run: send(true) });
   }
   if (env.ANTHROPIC_API_KEY && env.STATE) {
+    // Meta-Prüfung (Cloud-Teil) vor der Triage-Vorbereitung; still.
+    if (env.GITHUB_TOKEN && env.HC_GITHUB_TOKEN) {
+      list.push({ name: "meta", at: (day) => (day === "Mon" ? hm(8, 15) : null), ignoresQuiet: true, run: async () => void (await meta(env)) });
+    }
     // Umfeld-Recherche vor dem Wochenbriefing; schickt nichts, darf also in der Ruhezeit laufen.
     list.push({ name: "umfeld", at: (day) => (day === "Tue" ? hm(7, 30) : null), ignoresQuiet: true, run: async () => void (await umfeld(env)) });
   }
@@ -177,7 +183,10 @@ async function triage(env: Env): Promise<{ v: Vorbereitung; path: string }> {
   );
   const date = started.toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
   const path = `triage/${date}.md`;
-  await writeTriageFile(env, path, renderTriage(v, date), `${path}: Vorbereitung (via Briefing)`);
+  // Meta-Prüfung der letzten 7 Tage gehört in die Triage (§6 Schritt 5).
+  const m = await env.STATE!.get<MetaResult>(META_KEY, "json");
+  const fresh = m && Date.parse(date) - Date.parse(m.datum) <= 7 * 86_400_000;
+  await writeTriageFile(env, path, renderTriage(v, date, fresh ? renderMeta(m) : undefined), `${path}: Vorbereitung (via Briefing)`);
   await env.STATE!.put(TRIAGE_CRITICAL, String(critical(v)));
   return { v, path };
 }
@@ -194,6 +203,7 @@ function briefing(env: Env, sinceIso: string, weekly = false): Promise<string> {
       weather: () => fetchWeather(),
       umfeld: async () => (await env.STATE?.get<Ereignis[]>(UMFELD_KEY, "json")) ?? [],
       ...(googleReady(env) ? { calendar: (from: string, to: string) => listEvents(env, from, to) } : {}),
+      meta: async () => (await env.STATE?.get<MetaResult>(META_KEY, "json")) ?? null,
       now: () => new Date(),
     },
     sinceIso,
@@ -202,6 +212,39 @@ function briefing(env: Env, sinceIso: string, weekly = false): Promise<string> {
 }
 
 const UMFELD_REQUESTED = "umfeld:requested";
+const META_REQUESTED = "meta:requested";
+
+async function meta(env: Env): Promise<MetaResult> {
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const [commits, eingang] = await Promise.all([commitMessagesSince(env, weekAgo), readRepoFile(env, "docs/eingang.md")]);
+  const lines: RepoLine[] = eingang.ok ? eingang.text.split("\n").filter((l) => l.startsWith("- ")).map((line) => ({ file: "docs/eingang.md", line: line.trim() })) : [];
+  const tokenFor = (repo: string) => (HC_REPOS.includes(repo) ? env.HC_GITHUB_TOKEN! : env.GITHUB_TOKEN!);
+  const result = await runMeta(
+    {
+      commits: (repo, since, path) => repoCommits(tokenFor(repo), repo, since, path),
+      readFile: (repo, path) => repoFile(tokenFor(repo), repo, path),
+      client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 240_000 }),
+      now: () => now,
+    },
+    selfCheck(commits, lines),
+  );
+  await env.STATE!.put(META_KEY, JSON.stringify(result), { expirationTtl: 30 * 86_400 });
+  return result;
+}
+
+async function requestedMeta(env: Env): Promise<void> {
+  if (!(await env.STATE!.get(META_REQUESTED))) return;
+  await env.STATE!.delete(META_REQUESTED);
+  let text: string;
+  try {
+    const m = await meta(env);
+    text = `Meta-Prüfung fertig: ${m.kurz} Sie steht in der nächsten Triage-Vorbereitung.`;
+  } catch (e) {
+    text = `Meta-Prüfung fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+  }
+  await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, text);
+}
 
 async function umfeld(env: Env): Promise<number> {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
@@ -265,7 +308,7 @@ function mailText(run: MailRun): string {
 }
 
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /triage – Triage jetzt vorbereiten (sonst Mo–Fr 8:45). /woche – Wochenbriefing jetzt (Vorschau). /umfeld – Umfeld-Recherche jetzt (sonst Di 7:30). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. „Schick mir …“ – Datei aus der Drive-Ablage in diesen Chat. /briefing – Tagesbriefing jetzt (Vorschau). „Erinnere mich …“ – Push zur genannten Zeit. /triage – Triage jetzt vorbereiten (sonst Mo–Fr 8:45). /woche – Wochenbriefing jetzt (Vorschau). /umfeld – Umfeld-Recherche jetzt (sonst Di 7:30). /meta – Meta-Prüfung jetzt (sonst Mo 8:15). /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -292,6 +335,11 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     } catch (e) {
       return `Wochenbriefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }
+  }
+  if (command === "/meta") {
+    if (!env.ANTHROPIC_API_KEY || !env.STATE || !env.HC_GITHUB_TOKEN) return "Für die Meta-Prüfung fehlen Zugänge (HC_GITHUB_TOKEN?).";
+    await env.STATE.put(META_REQUESTED, "1", { expirationTtl: 3600 });
+    return "Meta-Prüfung läuft – Meldung in den nächsten Minuten.";
   }
   if (command === "/umfeld") {
     if (!env.ANTHROPIC_API_KEY || !env.STATE) return "Für die Recherche fehlen Zugänge.";

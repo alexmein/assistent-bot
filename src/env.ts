@@ -3,6 +3,7 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET: string;
   ALLOWED_CHAT_ID?: string;
   GITHUB_TOKEN?: string;
+  HC_GITHUB_TOKEN?: string; // nur lesen: hc-system, hc-kitchen, hc-orders, hc-shopify (Meta-Prüfung)
   GITHUB_REPO: string;
   ANTHROPIC_API_KEY?: string;
   GOOGLE_CLIENT_ID?: string;

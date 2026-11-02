@@ -55,3 +55,29 @@ export async function writeTriageFile(env: Env, path: string, text: string, mess
   });
   if (!put.ok) throw new Error(`GitHub HTTP ${put.status} beim Schreiben von ${path}`);
 }
+
+// Lesen in beliebigen Repos mit eigenem Token (Meta-Prüfung: dieses Repo mit GITHUB_TOKEN, HC-Repos mit HC_GITHUB_TOKEN).
+function ghHeaders(token: string, raw = false): HeadersInit {
+  return {
+    Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "User-Agent": "assistent-bot",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+export async function repoCommits(token: string, repo: string, sinceIso: string, path?: string): Promise<{ repo: string; when: string; message: string }[]> {
+  const params = new URLSearchParams({ since: sinceIso, per_page: "100", ...(path ? { path } : {}) });
+  const res = await fetch(`https://api.github.com/repos/${repo}/commits?${params}`, { headers: ghHeaders(token) });
+  if (!res.ok) throw new Error(`GitHub ${repo} Commits HTTP ${res.status}`);
+  return ((await res.json()) as { commit: { message: string; author: { date: string } } }[]).map((c) => ({ repo, when: c.commit.author.date, message: c.commit.message }));
+}
+
+export async function repoFile(token: string, repo: string, path: string): Promise<string | null> {
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, { headers: ghHeaders(token, true) });
+  if (!res.ok) {
+    console.log(`GitHub ${repo}/${path}: HTTP ${res.status}`);
+    return null;
+  }
+  return res.text();
+}
