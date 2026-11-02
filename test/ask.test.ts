@@ -203,6 +203,12 @@ describe("confirm", () => {
   it("lässt normale Antworten ohne Ablage unverändert", () => {
     expect(confirm([], "Kritisch ist die Steuererklärung.")).toBe("Kritisch ist die Steuererklärung.");
   });
+  it("geschickte Datei: keine Bestätigung, Unsicherheit bleibt stehen", () => {
+    expect(confirm([], "", 1)).toBe("");
+    expect(confirm([], "Zwei Treffer: A oder B?", 1)).toBe("Zwei Treffer: A oder B?");
+    expect(confirm([], "Geschickt!", 0)).toBe("Achtung: Es wurde nichts gespeichert. Bitte noch einmal schicken.");
+  });
+
   it("lässt „nicht abgelegt“ stehen", () => {
     expect(confirm([], "Nicht abgelegt: das gehört in die Triage.")).toBe("Nicht abgelegt: das gehört in die Triage.");
   });
@@ -309,7 +315,7 @@ describe("Dateien schicken (Entscheidung 45)", () => {
 
   it("sucht, schickt in den Chat und bestätigt aus dem Code", async () => {
     const { d, create, findFiles, sendFile } = withFiles([call("find_file", { suche: "zooplus" }), call("send_file", { id: "abc1234567890" }, "y"), text("")]);
-    expect(await ask("schick mir die zooplus-Kündigung", d)).toBe("Geschickt: 2025-01-29 zooplus Kündigung.pdf");
+    expect(await ask("schick mir die zooplus-Kündigung", d)).toBe(""); // die Datei im Chat ist die Bestätigung
     expect(findFiles).toHaveBeenCalledWith("zooplus");
     expect(sendFile).toHaveBeenCalledWith("abc1234567890");
     expect(JSON.stringify(paramsOf(create, 2).messages)).toContain("abc1234567890 | 2025-01-29 zooplus Kündigung.pdf | Privat | 2026-11-02");

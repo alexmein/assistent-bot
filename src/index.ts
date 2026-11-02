@@ -57,7 +57,7 @@ export default {
     }
 
     const answer = message.document || message.photo ? await fileReply(message, env, chatId) : await reply(message.text, env, chatId);
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, answer);
+    if (answer) await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, answer); // leer = Datei geschickt, nichts zu sagen
     return ok();
   },
 

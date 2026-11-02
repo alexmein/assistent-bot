@@ -47,10 +47,10 @@ Erfassen (CLAUDE.md §1 Routing, §2 Autonomie, §4):
 - Will Alex etwas erledigen, ändern, umformulieren, verschieben oder löschen: nicht möglich – sag, dass das in die Triage am Mac gehört, und lege es als Zeile in docs/status.md › „## → am Mac“ ab.
 - Keine Konto-, Ausweis-, Vertrags- oder Steuernummern, keine Passwörter, keine Beträge aus Kontoauszügen (R7).
 - Erinnerungen per Push kann der Bot noch nicht (kommt in Phase 3); die Frist steht im To-do.
-- Die Bestätigungen („Abgelegt: …“, „In Drive: …“, „Im Kalender: …“) erzeugt das Programm selbst aus dem, was wirklich gespeichert wurde. Schreib danach höchstens einen kurzen Zusatz (z. B. Begründung der Priorität) oder nichts. Schreib nie „abgelegt“, „eingetragen“ oder „gespeichert“, wenn das Werkzeug nicht erfolgreich war.
+- Die Bestätigungen („Abgelegt: …“, „In Drive: …“, „Im Kalender: …“) erzeugt das Programm selbst aus dem, was wirklich gespeichert wurde. Danach schreibst du nichts – außer bei Unsicherheit (Zuordnung unklar, Frist oder Priorität geraten, mehrere Deutungen möglich), dann ein kurzer Satz dazu. Keine Wiederholung dessen, was erledigt wurde, keine Erklärungen des Offensichtlichen. Schreib nie „abgelegt“, „eingetragen“ oder „gespeichert“, wenn das Werkzeug nicht erfolgreich war.
 
 Dateien schicken (nur wenn find_file verfügbar ist):
-- Will Alex eine Datei haben („schick mir die zooplus-Kündigung“), suche mit find_file (kurzer Suchbegriff, z. B. „zooplus“) und schicke die passende mit send_file in diesen Chat. Bei mehreren gleich passenden Treffern: die Liste kurz nennen und fragen, welche. Weiterleiten an andere macht Alex selbst; Mails versenden kannst du nicht.
+- Will Alex eine Datei haben („schick mir die zooplus-Kündigung“), suche mit find_file (kurzer Suchbegriff, z. B. „zooplus“) und schicke die passende mit send_file in diesen Chat. Danach kein Text – die Datei im Chat ist die Bestätigung. Bei mehreren gleich passenden Treffern nichts schicken, sondern die Liste kurz nennen und fragen, welche; kein Treffer → kurz sagen. Weiterleiten an andere macht Alex selbst; Mails versenden kannst du nicht.
 
 Termine (nur wenn create_event verfügbar ist):
 - Nennt Alex selbst einen Termin, trag ihn mit create_event in seinen Kalender ein (Europe/Berlin; ohne Uhrzeit ganztägig, ohne Ende eine Stunde). Ein To-do nur, wenn es zusätzlich etwas zu tun gibt.
@@ -266,7 +266,7 @@ export async function ask(question: string, deps: AskDeps, attachment?: Attachme
   const usage: Usage = { calls: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
   let toolCalls = 0;
   const state: ToolState = { isoDate, attachment, done: [], documentSaved: false, sent: 0 };
-  const finish = (modelText: string) => confirm(state.done, modelText);
+  const finish = (modelText: string) => confirm(state.done, modelText, state.sent);
 
   try {
     for (let round = 1; round <= MAX_ROUNDS; round++) {
@@ -315,13 +315,14 @@ export async function ask(question: string, deps: AskDeps, attachment?: Attachme
   }
 }
 
-// Bestätigung aus dem, was wirklich gespeichert wurde – nicht aus dem Modelltext.
-export function confirm(done: string[], modelText: string): string {
+// Bestätigung aus dem, was wirklich gespeichert wurde – nicht aus dem Modelltext. Geschickte Dateien bestätigen sich
+// selbst; dann ist eine leere Antwort richtig (index.ts schickt nichts).
+export function confirm(done: string[], modelText: string, sent = 0): string {
   let text = modelText.trim();
-  if (done.length === 0 && /^\W*(abgelegt|eingetragen|gespeichert)/i.test(text)) {
+  if (done.length === 0 && sent === 0 && /^\W*(abgelegt|eingetragen|gespeichert|geschickt)/i.test(text)) {
     text = "Achtung: Es wurde nichts gespeichert. Bitte noch einmal schicken.";
   }
-  if (done.length === 0) return text || "Dazu habe ich keine Antwort gefunden.";
+  if (done.length === 0) return text || (sent ? "" : "Dazu habe ich keine Antwort gefunden.");
   return [...done, text].filter(Boolean).join("\n");
 }
 
@@ -404,8 +405,7 @@ async function runTool(use: Anthropic.ToolUseBlock, deps: AskDeps, overLimit: bo
       if (e instanceof GoogleError) return fail(e.message);
       throw e;
     }
-    state.sent++;
-    state.done.push(`Geschickt: ${name}`);
+    state.sent++; // keine Bestätigung: die Datei im Chat zeigt es
     return ok(`In den Chat geschickt: ${name}`);
   }
   if (use.name !== "read_file") return fail(`Unbekanntes Werkzeug: ${use.name}`);
