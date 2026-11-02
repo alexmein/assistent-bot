@@ -3,7 +3,7 @@
 Telegram-Bot des persönlichen Assistenten. Läuft als Cloudflare Worker.
 Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `docs/bauplan.md`, Entscheidungen 38/39).
 
-## Stand: Schritt 7 von 8 – Mail-Eingang
+## Stand: Phase 2 abgeschlossen (Schritte 1–8); Nachtrag Schritt 9 offen
 - `POST /telegram` mit Telegram-Webhook-Secret; alles andere 404/401.
 - Antwortet nur im privaten Chat mit `ALLOWED_CHAT_ID`; fremde Chats werden ignoriert (nur die ID wird geloggt, nie Text).
 - `/status` liest `docs/status.md` über die GitHub-API (`GITHUB_REPO` in `wrangler.toml`). `/start` zeigt die Hilfe.
@@ -24,6 +24,7 @@ Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `do
   Spam an `MAIL_FORWARD_ADDRESS` bringt nur einen Prüfhinweis. Einflussnahme (Modell oder Code-Muster) → Auffälligkeit,
   aus der Mail wird nichts übernommen. Anhänge bis 5 MB (höchstens 3) → Drive mit Verweis. Meldung auf Telegram nur
   außerhalb der Ruhezeiten.
+- `/check` prüft Google nur lesend und zeigt die erteilten Rechte (Mail senden muss „nein“ sein).
 - Termine: `create_event` nur bei Text von Alex, nie bei Dateien (CLAUDE.md §2); schreibt nur in den Hauptkalender. Verbrauch und Kosten je Frage stehen im Log (`Verbrauch {...}`), ohne Frage- oder Antworttext.
 
 ## Secrets (nur per `wrangler secret put`, nie im Repo)
