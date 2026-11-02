@@ -10,7 +10,6 @@ import {
   injectionFlags,
   parseMessage,
   pollMail,
-  quietTime,
   senderName,
   type Analysis,
   type GmailMessage,
@@ -355,16 +354,5 @@ describe("pollMail", () => {
     const { d, create } = deps(["a", "b", "c"], [json(analysis()), json(analysis())]);
     expect((await pollMail(d, 2)).report).toHaveLength(2);
     expect(create).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("quietTime", () => {
-  it("Ruhezeiten nach CLAUDE.md §3 (Berliner Zeit)", () => {
-    expect(quietTime(new Date("2026-11-03T06:30:00Z"))).toBe(true); // Di 7:30
-    expect(quietTime(new Date("2026-11-03T08:00:00Z"))).toBe(false); // Di 9:00
-    expect(quietTime(new Date("2026-11-07T09:00:00Z"))).toBe(true); // Sa 10:00
-    expect(quietTime(new Date("2026-11-07T10:00:00Z"))).toBe(false); // Sa 11:00
-    expect(quietTime(new Date("2026-11-02T11:00:00Z"))).toBe(false); // Mo 12:00
-    expect(quietTime(new Date("2026-11-02T12:30:00Z"))).toBe(true); // Mo 13:30
   });
 });

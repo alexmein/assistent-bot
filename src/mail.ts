@@ -544,16 +544,3 @@ async function loadAttachments(mail: Mail, deps: Pick<MailDeps, "attachment">): 
 // Ganzes Konto inklusive Spam: Weiterleitungen fallen oft durch SPF/DMARC und landen dort (Test 2026-11-02).
 // Spam ans Hauptpostfach sortiert pollMail ohne Modell aus.
 export const GMAIL_QUERY = "in:anywhere -in:trash -in:sent -in:drafts newer_than:3d";
-
-// Ruhezeiten (CLAUDE.md §3): täglich 0–8 Uhr, Sa/So bis 10:30, Montag ab 13 Uhr.
-export function quietTime(now: Date): boolean {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Berlin", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
-      .formatToParts(now)
-      .map((p) => [p.type, p.value]),
-  );
-  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
-  if (minutes < 8 * 60) return true;
-  if ((parts.weekday === "Sat" || parts.weekday === "Sun") && minutes < 10 * 60 + 30) return true;
-  return parts.weekday === "Mon" && minutes >= 13 * 60;
-}

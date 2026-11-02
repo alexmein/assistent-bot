@@ -7,7 +7,8 @@ import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
 import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, googleReady, listMessages, saveToDrive } from "./google";
-import { GMAIL_QUERY, pollMail, quietTime, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
+import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
+import { parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
 
@@ -61,8 +62,11 @@ export default {
     return ok();
   },
 
-  // Cron alle 15 Minuten: Mail-Eingang. Meldung auf Telegram nur außerhalb der Ruhezeiten; abgelegt wird immer.
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  // Cron alle 15 Minuten: geplante Läufe (Berliner Zeit), dann Mail-Eingang. Meldung zum Mail-Eingang auf Telegram nur
+  // außerhalb der Ruhezeiten; abgelegt wird immer.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (env.STATE) await runDue(jobs(env), new Date(controller.scheduledTime), env.STATE);
+    else console.log("Zeitpläne aus: KV STATE fehlt");
     const reason = mailNotReady(env);
     if (reason) return console.log(`Mail-Eingang aus: ${reason}`);
     const run = await runMail(env, 8);
@@ -71,6 +75,21 @@ export default {
     }
   },
 };
+
+function jobs(env: Env): Job[] {
+  const list: Job[] = [];
+  const probe = parseHm(env.PROBE_AT);
+  if (probe !== null && env.ALLOWED_CHAT_ID) {
+    // Ausdrücklich terminiert wie eine Erinnerung → geht auch in der Ruhezeit durch.
+    list.push({
+      name: "probe",
+      at: () => probe,
+      ignoresQuiet: true,
+      run: () => sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, `Probe Zeitgerüst: geplant ${env.PROBE_AT} Berliner Zeit.`),
+    });
+  }
+  return list;
+}
 
 function mailNotReady(env: Env): string | null {
   if (!googleReady(env)) return "Google nicht eingerichtet";
@@ -206,6 +225,16 @@ function truncate(text: string, max: number): string {
 
 function ok(): Response {
   return new Response("OK");
+}
+
+// Für geplante Läufe: Fehler werfen, damit der Lauf nicht als erledigt gilt und der nächste Cron es erneut versucht.
+async function sendMessageOrThrow(token: string, chatId: string, text: string): Promise<void> {
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+  if (!res.ok) throw new Error(`Telegram HTTP ${res.status}`);
 }
 
 async function sendMessage(token: string, chatId: string, text: string): Promise<void> {

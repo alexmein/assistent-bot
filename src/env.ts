@@ -11,4 +11,6 @@ export interface Env {
   DRIVE_ROOT_ID?: string;
   MAIL_FORWARD_ADDRESS?: string; // Plus-Adresse, an die iCloud weiterleitet (Secret)
   MAIL_SEEN?: KVNamespace; // verarbeitete Gmail-IDs
+  STATE?: KVNamespace; // Zeitpläne: welcher Lauf heute schon erledigt ist
+  PROBE_AT?: string; // „HH:MM“: Probenachricht für den Test des Zeitgerüsts
 }

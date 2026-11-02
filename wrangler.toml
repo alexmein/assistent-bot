@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 workers_dev = true
 
-# Mail-Eingang alle 15 Minuten (Schritt 7)
+# Alle 15 Minuten: geplante Läufe (Berliner Zeit, src/schedule.ts) und Mail-Eingang
 [triggers]
 crons = ["*/15 * * * *"]
 
@@ -12,9 +12,15 @@ crons = ["*/15 * * * *"]
 binding = "MAIL_SEEN"
 id = "4016159c7cd54d38bd6d9e810e1e9d35"
 
+# Zeitpläne (Phase 3): welcher geplante Lauf heute schon erledigt ist
+[[kv_namespaces]]
+binding = "STATE"
+id = "6967f08f5b3a4bb7b698f4db2de2f52b"
+
 [vars]
 GITHUB_REPO = "alexmein/Assistent"
 DRIVE_ROOT_ID = "1sGrt7mDdj2E-525nJnMSLBpkwi0lcseN"
+PROBE_AT = "21:00" # nur für den Test von Phase 3 Schritt 1, danach entfernen
 
 # Secrets (nie hier, nur per `wrangler secret put`):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN, ANTHROPIC_API_KEY,
