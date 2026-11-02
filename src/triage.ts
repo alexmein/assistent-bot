@@ -119,7 +119,7 @@ export function checkVorbereitung(raw: unknown): Vorbereitung {
   return { punkte: punkte.slice(0, MAX_POINTS), technik: cut(str(v.technik, 2000), 600) || null };
 }
 
-function cut(text: string, max: number): string {
+export function cut(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, text.lastIndexOf(" ", max - 1) > 0 ? text.lastIndexOf(" ", max - 1) : max - 1)} …`;
 }

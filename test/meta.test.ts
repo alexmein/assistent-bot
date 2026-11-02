@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { checkMeta, metaLines, renderMeta, runMeta, type MetaDeps } from "../src/meta";
+import { checkMeta, metaLines, newDecisionEntries, renderMeta, runMeta, type MetaDeps } from "../src/meta";
 import { renderTriage } from "../src/triage";
 
 const result = { punkte: [{ nr: 4, titel: "Fokus", befund: "B" }, { nr: 1, titel: "Dichte", befund: "A" }, { nr: 3, titel: "nicht hier", befund: "x" }], hebel: "Hebel", begruendung: "weil", kurz: "Kurz." };
@@ -17,6 +17,14 @@ describe("checkMeta / Darstellung", () => {
     expect(metaLines(m, "2026-11-10")).toEqual(["- Kurz."]);
     expect(metaLines(m, "2026-11-24")).toEqual(["- Kurz. (Stand 2026-11-09 – diese Woche keine neue)"]);
     expect(metaLines(null, "2026-11-10")).toEqual(["- Noch keine Meta-Prüfung."]);
+  });
+});
+
+describe("newDecisionEntries", () => {
+  it("Tabelle und nummerierte Liste", () => {
+    const list = "# Decisions\n\n175. **Alt** `[A]` (2026-10-30).\n176. **Triage 2026-11-01** `[A~]` (Alex: ok): packaging\n   per order.\n177. **Neu** `[A]`\n   (2026-11-05)";
+    expect(newDecisionEntries(list, "2026-11-01")).toEqual(["176. **Triage 2026-11-01** `[A~]` (Alex: ok): packaging per order.", "177. **Neu** `[A]` (2026-11-05)"]);
+    expect(newDecisionEntries("| 48 | 2026-11-02 | x |\n| 3 | 2026-10-27 | y |", "2026-11-01")).toEqual(["| 48 | 2026-11-02 | x |"]);
   });
 });
 
