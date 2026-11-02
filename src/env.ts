@@ -9,4 +9,6 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_REFRESH_TOKEN?: string;
   DRIVE_ROOT_ID?: string;
+  MAIL_FORWARD_ADDRESS?: string; // Plus-Adresse, an die iCloud weiterleitet (Secret)
+  MAIL_SEEN?: KVNamespace; // verarbeitete Gmail-IDs
 }

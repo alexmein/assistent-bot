@@ -15,8 +15,10 @@ export function allowedSections(path: string): string[] | null {
 
 export type Checked = { ok: true; line: string } | { ok: false; error: string };
 
-// Prüft und vervollständigt die Zeile. `date` ist JJJJ-MM-TT (Europe/Berlin).
-export function checkLine(path: string, section: string, raw: string, date: string): Checked {
+export type Origin = "Telegram" | "Mail";
+
+// Prüft und vervollständigt die Zeile. `date` ist JJJJ-MM-TT (Europe/Berlin), `origin` die Herkunft (R11).
+export function checkLine(path: string, section: string, raw: string, date: string, origin: Origin = "Telegram"): Checked {
   const sections = allowedSections(path);
   if (!sections) return { ok: false, error: "Datei nicht erlaubt." };
   if (!sections.includes(section)) return { ok: false, error: `Abschnitt nicht erlaubt. Erlaubt: ${sections.join(" | ")}` };
@@ -37,7 +39,7 @@ export function checkLine(path: string, section: string, raw: string, date: stri
   if (/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b/.test(line) || /(?<![\d+][ ./-]?)[1-9](?:[ ./-]?\d){9,}/.test(line)) {
     return { ok: false, error: "Sieht nach einer Konto-, Vertrags- oder Ausweisnummer aus – die gehört nicht ins Repo (R7)." };
   }
-  const source = `Telegram ${date}`;
+  const source = `${origin} ${date}`;
   return { ok: true, line: line.includes(source) ? line : `${line} · ${source}` };
 }
 
@@ -79,7 +81,7 @@ function headers(env: Env): HeadersInit {
   };
 }
 
-export async function appendEntry(env: Env, path: string, section: string, line: string): Promise<AppendResult> {
+export async function appendEntry(env: Env, path: string, section: string, line: string, origin: Origin = "Telegram"): Promise<AppendResult> {
   const url = `${API}/repos/${env.GITHUB_REPO}/contents/${path}`;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const get = await fetch(url, { headers: headers(env) });
@@ -93,7 +95,7 @@ export async function appendEntry(env: Env, path: string, section: string, line:
     const put = await fetch(url, {
       method: "PUT",
       headers: { ...headers(env), "Content-Type": "application/json" },
-      body: JSON.stringify({ message: `${path}: ${short} (via Telegram)`, content: encodeBase64(next), sha: file.sha }),
+      body: JSON.stringify({ message: `${path}: ${short} (via ${origin})`, content: encodeBase64(next), sha: file.sha }),
     });
     if (put.ok) {
       console.log(`Angehängt: ${path} ${section}`); // ohne Inhalt (R7); der Inhalt steht im Commit

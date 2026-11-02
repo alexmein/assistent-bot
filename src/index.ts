@@ -1,10 +1,13 @@
-// Assistent-Bot, Schritt 6: /status aus dem Repo; Text → Fragen, Erfassen, Termine; Dateien/Fotos → Drive.
-// Nimmt nur Nachrichten aus Alex' Chat an.
+// Assistent-Bot, Schritt 7: /status aus dem Repo; Text → Fragen, Erfassen, Termine; Dateien/Fotos → Drive;
+// alle 15 Minuten Mail-Eingang (Cron). Nimmt nur Nachrichten aus Alex' Chat an.
 
+import Anthropic from "@anthropic-ai/sdk";
+import { appendEntry } from "./append";
 import { ask, defaultDeps, type Attachment } from "./ask";
 import type { Env } from "./env";
 import { readRepoFile } from "./github";
-import { checkGoogle, googleReady } from "./google";
+import { checkGoogle, getMessage, googleReady, listMessages } from "./google";
+import { gmailQuery, pollMail, quietTime, type GmailMessage } from "./mail";
 
 export type { Env } from "./env";
 
@@ -57,10 +60,43 @@ export default {
     await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, answer);
     return ok();
   },
+
+  // Cron alle 15 Minuten: Mail-Eingang. Meldung auf Telegram nur außerhalb der Ruhezeiten; abgelegt wird immer.
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const reason = mailNotReady(env);
+    if (reason) return console.log(`Mail-Eingang aus: ${reason}`);
+    const report = await runMail(env);
+    if (report.length && env.ALLOWED_CHAT_ID && !quietTime(new Date())) {
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID, truncate(mailText(report), TELEGRAM_MAX));
+    }
+  },
 };
 
+function mailNotReady(env: Env): string | null {
+  if (!googleReady(env)) return "Google nicht eingerichtet";
+  if (!env.MAIL_FORWARD_ADDRESS) return "MAIL_FORWARD_ADDRESS fehlt";
+  if (!env.MAIL_SEEN) return "KV MAIL_SEEN fehlt";
+  if (!env.GITHUB_TOKEN || !env.ANTHROPIC_API_KEY) return "GITHUB_TOKEN/ANTHROPIC_API_KEY fehlt";
+  return null;
+}
+
+function runMail(env: Env): Promise<string[]> {
+  return pollMail({
+    list: () => listMessages(env, gmailQuery(env.MAIL_FORWARD_ADDRESS!)),
+    get: (id) => getMessage<GmailMessage>(env, id),
+    seen: env.MAIL_SEEN!,
+    client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 45_000 }),
+    write: (path, section, line) => appendEntry(env, path, section, line, "Mail"),
+    now: () => new Date(),
+  });
+}
+
+function mailText(report: string[]): string {
+  return [`Mail-Eingang (${report.length}):`, ...report.map((r) => `- ${r}`)].join("\n");
+}
+
 const HELP =
-  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
+  "Befehle: /status – Dashboard aus docs/status.md. /check – Google-Zugriff prüfen. /mail – Mail-Eingang jetzt abrufen (sonst alle 15 Minuten). Text lege ich ab, trage genannte Termine ein oder beantworte ihn als kleine Frage. Dateien und Fotos lege ich in Drive ab. Ändern, Erledigen und Löschen nur in der Triage am Mac.";
 
 async function reply(text: string | undefined, env: Env, chatId: string): Promise<string> {
   if (!text) return "Ich verstehe Text, Dateien und Fotos.";
@@ -69,6 +105,17 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
   if (command === "/start" || command === "/hilfe" || command === "/help") return HELP;
   if (command === "/status") return statusReply(env);
   if (command === "/check") return googleReady(env) ? (await checkGoogle(env)).join("\n") : "Google ist noch nicht eingerichtet.";
+  if (command === "/mail") {
+    const reason = mailNotReady(env);
+    if (reason) return `Mail-Eingang noch nicht bereit: ${reason}.`;
+    await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
+    try {
+      const report = await runMail(env);
+      return report.length ? mailText(report) : "Keine neuen Mails.";
+    } catch (e) {
+      return `Mail-Abruf fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
+    }
+  }
   if (command.startsWith("/")) return `Unbekannter Befehl. ${HELP}`;
   if (!env.GITHUB_TOKEN) return "Mir fehlt noch der GitHub-Zugang (GITHUB_TOKEN).";
   if (!env.ANTHROPIC_API_KEY) return "Für Fragen fehlt noch der Anthropic-Schlüssel (ANTHROPIC_API_KEY).";

@@ -26,7 +26,7 @@ export async function accessToken(env: Env): Promise<string> {
 export class GoogleError extends Error {}
 
 // Google liefert im Fehlerfall einen Grund wie „accessNotConfigured“ (API nicht aktiviert) – nur der kommt ins Log.
-async function failure(what: string, res: Response): Promise<GoogleError> {
+export async function failure(what: string, res: Response): Promise<GoogleError> {
   let reason = "";
   try {
     const body = (await res.json()) as { error?: { status?: string; errors?: { reason?: string }[] } };
@@ -192,4 +192,22 @@ export async function checkGoogle(env: Env): Promise<string[]> {
     lines.push(res.ok ? `${what}: ok` : `${(await failure(what, res)).message}`);
   }
   return lines;
+}
+
+// ---------- Gmail (nur lesen) ----------
+
+async function gmail<T>(env: Env, path: string): Promise<T> {
+  const token = await accessToken(env);
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw await failure("Gmail", res);
+  return (await res.json()) as T;
+}
+
+export async function listMessages(env: Env, query: string): Promise<string[]> {
+  const data = await gmail<{ messages?: { id: string }[] }>(env, `messages?maxResults=20&q=${encodeURIComponent(query)}`);
+  return (data.messages ?? []).map((m) => m.id);
+}
+
+export function getMessage<T>(env: Env, id: string): Promise<T> {
+  return gmail<T>(env, `messages/${encodeURIComponent(id)}?format=full`);
 }
