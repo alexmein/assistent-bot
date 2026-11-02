@@ -5,7 +5,7 @@ workers_dev = true
 
 [vars]
 GITHUB_REPO = "alexmein/Assistent"
-DRIVE_ROOT_ID = "" # setzt scripts/google-auth.mjs
+DRIVE_ROOT_ID = "1sGrt7mDdj2E-525nJnMSLBpkwi0lcseN"
 
 # Secrets (nie hier, nur per `wrangler secret put`):
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_ID, GITHUB_TOKEN, ANTHROPIC_API_KEY,

@@ -25,6 +25,17 @@ export async function accessToken(env: Env): Promise<string> {
 
 export class GoogleError extends Error {}
 
+// Google liefert im Fehlerfall einen Grund wie „accessNotConfigured“ (API nicht aktiviert) – nur der kommt ins Log.
+async function failure(what: string, res: Response): Promise<GoogleError> {
+  let reason = "";
+  try {
+    const body = (await res.json()) as { error?: { status?: string; errors?: { reason?: string }[] } };
+    reason = body.error?.errors?.[0]?.reason ?? body.error?.status ?? "";
+  } catch {}
+  console.log(`${what}: HTTP ${res.status} ${reason}`);
+  return new GoogleError(`${what} HTTP ${res.status}${reason ? ` (${reason})` : ""}`);
+}
+
 export function googleReady(env: Env): boolean {
   return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN && env.DRIVE_ROOT_ID);
 }
@@ -50,7 +61,7 @@ export function checkFileName(name: string, originalName: string): string | null
 async function drive(env: Env, url: string, init: RequestInit = {}): Promise<Response> {
   const token = await accessToken(env);
   const res = await fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new GoogleError(`Drive HTTP ${res.status}`);
+  if (!res.ok) throw await failure("Drive", res);
   return res;
 }
 
@@ -156,6 +167,6 @@ export async function insertEvent(env: Env, body: Record<string, unknown>): Prom
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new GoogleError(`Kalender HTTP ${res.status}`);
+  if (!res.ok) throw await failure("Kalender", res);
   console.log("Kalender: Termin eingetragen");
 }
