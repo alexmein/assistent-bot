@@ -78,7 +78,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "read_file",
     description:
-      "Liest eine Markdown-Datei aus Alex' Assistenten-Repo. Erlaubt sind CLAUDE.md sowie docs/<name>.md, bereiche/<name>.md, monitor/<name>.md und archiv/<name>.md. Bereiche: hc-founder, hc-strategie, privat-todos, wiederkehrend, essensplanung, wohnung-ackerstrasse, versicherungen, steuern, ki-arbeitsweise. Weitere docs: decisions, bauplan.",
+      "Liest eine Markdown-Datei aus Alex' Assistenten-Repo. Erlaubt sind CLAUDE.md sowie docs/<name>.md, bereiche/<name>.md, monitor/<name>.md und archiv/<name>.md. Bereiche: hc-founder, hc-strategie, hc-marketing, privat-todos, wiederkehrend, essensplanung, wohnung-ackerstrasse, versicherungen, steuern, ki-arbeitsweise. Weitere docs: decisions, bauplan.",
     input_schema: {
       type: "object",
       properties: { path: { type: "string", description: "z. B. bereiche/steuern.md" } },
