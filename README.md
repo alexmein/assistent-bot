@@ -22,8 +22,8 @@ Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `do
   Werkzeuge und liefert festes JSON (relevant, Kurzfassung, Bereich, To-dos, Ablage der Anhänge, Unklares,
   Einflussnahme); geschrieben wird nur vom Code („… (via Mail)“). Spam ans Hauptpostfach wird ohne Modell aussortiert,
   Spam an `MAIL_FORWARD_ADDRESS` bringt nur einen Prüfhinweis. Einflussnahme (Modell oder Code-Muster) → Auffälligkeit,
-  aus der Mail wird nichts übernommen. Anhänge bis 5 MB (höchstens 3) → Drive mit Verweis. Meldung auf Telegram nur
-  außerhalb der Ruhezeiten.
+  aus der Mail wird nichts übernommen. Anhänge bis 5 MB (höchstens 3) → Drive mit Verweis. Abgelegt wird still; auf
+  Telegram nur kritische To-dos mit Frist bis übermorgen, außerhalb der Ruhezeiten (Entscheidung 57). `/mail` zeigt alles.
 - `/check` prüft Google nur lesend und zeigt die erteilten Rechte (Mail senden muss „nein“ sein).
 - Dateien auf Anfrage (`find_file`/`send_file`, Entscheidung 45): nur aus der Drive-Ablage, nur in Alex' Chat.
 
@@ -32,10 +32,13 @@ Regeln, Wissen und Bauplan stehen im Repo `alexmein/Assistent` (`CLAUDE.md`, `do
 |---|---|---|
 | alle 5 Min. | fällige Push-Erinnerungen (KV `STATE`, auch in Ruhezeiten) | `src/reminders.ts` |
 | alle 15 Min. | Mail-Eingang | `src/mail.ts` |
-| tägl. 8:30, Sa/So 10:30 (nicht Di) | Tagesbriefing, ohne Modell | `src/briefing.ts`, `src/kalender.ts` |
+| tägl. 8:30, Sa/So 10:30 (nicht Di) | Tagesbriefing, ohne Modell; Sa/So nur, wenn etwas fällig ist | `src/briefing.ts`, `src/kalender.ts` |
 | Di 7:30 / 8:30 | Umfeld-Recherche (Haiku + Websuche) / Wochenbriefing | `src/umfeld.ts`, `src/briefing.ts` |
 | Mo 8:15 | Meta-Prüfung, Cloud-Teil (Sonnet 5.5, GitHub lesend) | `src/meta.ts` |
-| Mo–Fr 8:45 | Triage-Vorbereitung → `triage/JJJJ-MM-TT.md` (Sonnet 5.5) | `src/triage.ts` |
+| Mo–Fr 8:45 | Triage-Vorbereitung → `triage/JJJJ-MM-TT.md` (Sonnet 5.5); Telegram nur Do, wenn > 1 Runde offen | `src/triage.ts` |
+
+Telegram-Verschlankung (Entscheidung 57): Briefing nennt Fristen der Woche nur kritisch/dringend, Neues nur als
+höchstens 3 To-dos plus Zahl, Ferien/Umfeld nur heute/morgen; Wochenbriefing ohne Selbstkontrolle und Meta-Prüfung.
 
 Befehle: `/briefing`, `/woche` (Vorschauen), `/triage`, `/umfeld`, `/meta` (laufen im nächsten Cron), `/mail`.
 Ganze Dateien schreibt der Bot nur unter `triage/` (`writeTriageFile`); sonst nur Anhängen.

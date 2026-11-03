@@ -4,7 +4,6 @@
 
 import type { FileResult } from "./github";
 import type { CalendarItem } from "./google";
-import { metaLines, type MetaResult } from "./meta";
 import { dayLines, weekLines, type Ereignis } from "./umfeld";
 import { calendarLines, periodsFor } from "./kalender";
 import { BEREICHE } from "./mail";
@@ -124,14 +123,18 @@ export function dedupe(lines: DatedLine[]): DatedLine[] {
     const prev = best.get(k);
     if (!prev || (l.file.startsWith("bereiche/") && !prev.file.startsWith("bereiche/"))) best.set(k, l);
   }
-  return [...best.values()].sort((a, b) => a.date.localeCompare(b.date) || rank(a) - rank(b));
+  // Dashboard-Spiegelungen mit anderem Wortlaut: weg, wenn der Bereich am selben Tag selbst eine Zeile hat.
+  const own = new Set([...best.values()].filter((l) => l.file.startsWith("bereiche/")).map((l) => `${l.date}|${where(l)}`));
+  return [...best.values()]
+    .filter((l) => l.file.startsWith("bereiche/") || !own.has(`${l.date}|${where(l)}`))
+    .sort((a, b) => a.date.localeCompare(b.date) || rank(a) - rank(b));
 }
 
 const rank = (l: DatedLine) => ({ kritisch: 0, dringend: 1, standard: 2, "": 3 })[l.prio];
 
 function item(l: DatedLine, withDate: boolean): string {
   const prio = l.prio ? ` · ${l.prio}` : "";
-  return `- ${withDate ? `${shortDate(l.date)}: ` : ""}${core(l.line).text}${prio} (${where(l)})`;
+  return `- ${withDate ? `${shortDate(l.date)}: ` : ""}${short(core(l.line).text)}${prio} (${where(l)})`;
 }
 
 export interface RepoLine {
@@ -148,31 +151,35 @@ export function resolve(message: string, lines: RepoLine[]): RepoLine | null {
   return lines.find((l) => l.file === file && strip(l.line).startsWith(short.trim())) ?? null;
 }
 
-export function newsLines(items: string[], lines: RepoLine[]): string[] {
-  const mail = items.filter((m) => m.endsWith("(via Mail)")).length;
-  const counts = [mail ? `${mail} per Mail` : "", items.length - mail ? `${items.length - mail} per Telegram` : ""].filter(Boolean).join(", ");
+const MAX_NEWS = 3;
+const prioRank = (l: string) => (/· kritisch/.test(l) ? 0 : /· dringend/.test(l) ? 1 : 2);
+
+// Auf dem Handy reicht der Anfang; die ganze Zeile steht im Repo.
+const MAX_TEXT = 80;
+const short = (t: string) => (t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT - 1).trimEnd()}…` : t);
+export const todoKey = (line: string) => core(line).text.toLowerCase().replace(/[^a-zäöüß0-9]/g, "").slice(0, 30);
+
+// skip: Schlüssel von To-dos, die das Briefing schon unter „Heute fällig“/„Fristen“ nennt.
+export function newsLines(items: string[], lines: RepoLine[], skip: Set<string> = new Set()): string[] {
   const found = items.map((m) => resolve(m, lines)).filter((x): x is RepoLine => x !== null);
   const todos = new Map<string, string>();
-  const docs: string[] = [];
-  let inbox = 0;
-  let questions = 0;
   for (const f of found) {
-    if (/ – Drive: https:/.test(f.line)) docs.push(f.line.replace(/^- /, "").split(" – Drive:")[0]);
-    else if (f.line.startsWith("- [ ] ")) {
+    if (f.line.startsWith("- [ ] ")) {
       const c = core(f.line);
-      const key = c.text.toLowerCase().replace(/[^a-zäöüß0-9]/g, "").slice(0, 30);
+      const key = todoKey(f.line);
       const prio = /\b(kritisch|dringend|standard)\b/.exec(f.line)?.[1];
       const area = c.where || (f.file.startsWith("bereiche/") ? f.file.replace(/^bereiche\/|\.md$/g, "") : "Eingang");
-      if (!todos.has(key)) todos.set(key, `- ${c.text}${prio ? ` · ${prio}` : ""} (${area})`);
-    } else if (f.file === "docs/eingang.md" && !/versuchte Einflussnahme/.test(f.line)) {
-      inbox++;
-      if (f.line.startsWith("- [?]")) questions++;
+      if (!todos.has(key) && !skip.has(key)) todos.set(key, `- ${short(c.text)}${prio ? ` · ${prio}` : ""} (${area})`);
     }
   }
-  const out = [`${items.length} neue Einträge (${counts})`];
-  if (todos.size) out.push(`To-dos (${todos.size}):`, ...[...todos.values()].slice(0, 8), ...(todos.size > 8 ? [`- … und ${todos.size - 8} weitere`] : []));
-  if (docs.length) out.push(`In Drive (${docs.length}): ${docs.slice(0, 3).join("; ")}${docs.length > 3 ? " …" : ""}`);
-  if (inbox) out.push(`Eingangskorb: ${inbox} neu${questions ? `, davon ${questions} Rückfragen [?]` : ""} → Triage`);
+  // Entscheidung 57: nur, was Alex tun muss – höchstens 3 To-dos, wichtigste zuerst; Ablagen, Drive und
+  // Eingangskorb nur als Zahl (gehören in die Triage).
+  const shown = [...todos.values()].sort((a, b) => prioRank(a) - prioRank(b)).slice(0, MAX_NEWS);
+  // Die Dashboard-Spiegelung eines To-dos zählt nicht als eigener Eintrag.
+  const already = found.filter((f) => f.file !== "docs/status.md" && f.line.startsWith("- [ ] ") && skip.has(todoKey(f.line))).length;
+  const rest = items.filter((m) => !m.startsWith("docs/status.md:")).length - shown.length - already;
+  const out = [...shown];
+  if (rest > 0) out.push(`${shown.length ? "+ " : ""}${rest} ${shown.length ? "weitere " : ""}${rest === 1 ? "Eintrag" : "Einträge"} abgelegt → Triage`);
   return out;
 }
 
@@ -278,7 +285,6 @@ export interface BriefingDeps {
   weather: () => Promise<string>;
   umfeld?: () => Promise<Ereignis[]>; // letzte Recherche (KV)
   calendar?: (fromIso: string, toIso: string) => Promise<CalendarItem[]>; // nur Wochenbriefing
-  meta?: () => Promise<MetaResult | null>; // nur Wochenbriefing
   now: () => Date;
 }
 
@@ -309,27 +315,31 @@ export async function buildBriefing(deps: BriefingDeps, sinceIso: string, weekly
   const blocks: string[] = [];
   const add = (title: string, lines: string[]) => lines.length && blocks.push([title, ...lines].join("\n"));
   if (week) add("Woche voraus: Termine", week.termine);
-  add("Feiertage und Ferien", calendarLines(today, periodsFor(today, kalender.ok ? kalender.text : "")));
+  add("Feiertage und Ferien", calendarLines(today, periodsFor(today, kalender.ok ? kalender.text : ""), weekly ? 7 : 1));
   if (umfeld) add(weekly ? "Umfeld diese Woche" : "Umfeld heute/morgen", weekly ? weekLines(umfeld, today) : dayLines(umfeld, today));
   else if (weekly) blocks.push("Umfeld diese Woche\n- Recherche nicht verfügbar.");
-  add("Heute fällig", dedupe(due.heute).map((l) => item(l, false)));
-  add("Überfällig (kritisch)", dedupe(due.ueberfaellig).map((l) => item(l, true)));
-  add("Fristen nächste 7 Tage", dedupe(due.bald).map((l) => item(l, true)));
+  // Standard-Fristen erst am Tag selbst (Entscheidung 57).
+  const shownDue = [dedupe(due.heute), dedupe(due.ueberfaellig), dedupe(due.bald.filter((l) => l.prio === "kritisch" || l.prio === "dringend"))];
+  add("Heute fällig", shownDue[0].map((l) => item(l, false)));
+  add("Überfällig (kritisch)", shownDue[1].map((l) => item(l, true)));
+  add("Fristen nächste 7 Tage", shownDue[2].map((l) => item(l, true)));
   const repoLines: RepoLine[] = paths.flatMap((p, i) => {
     const f = files[i];
     return f.ok ? f.text.split("\n").filter((l) => l.startsWith("- ")).map((line) => ({ file: p, line: line.trim() })) : [];
   });
-  add("Neu eingegangen", items.length ? newsLines(items, repoLines) : []);
+  add("Neu eingegangen", items.length ? newsLines(items, repoLines, new Set(shownDue.flat().map((l) => todoKey(l.line)))) : []);
   const findings = newFindings(items, repoLines, files[1].ok ? files[1].text : "");
   add("Auffälligkeiten", findings.map(findingLine));
   if (unreadable.length) blocks.push(`(Nicht lesbar: ${unreadable.join(", ")})`);
 
   if (week) {
     add("Triage", triageLines(triageFile, week.commits));
-    add("Selbstkontrolle (7 Tage)", selfCheck(week.commits, repoLines));
-    if (deps.meta) add("Meta-Prüfung", metaLines(await deps.meta().catch(() => null), today));
+    // Selbstkontrolle und Meta-Prüfung gehören an den Mac in die Triage, nicht aufs Handy (Entscheidung 57).
   }
   if (!kalender.ok) blocks.push("(Nicht lesbar: docs/kalender.md)");
+  // Am Wochenende nur, wenn etwas fällig oder überfällig ist (Entscheidung 57).
+  const weekend = ["Sat", "Sun"].includes(new Date(`${today}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" }));
+  if (weekend && !weekly && !due.heute.length && !due.ueberfaellig.length) return "";
   const head = weekly ? `Wochenbriefing KW ${isoWeek(today)} · ${shortDate(today)}–${shortDate(addDays(today, 6))}\n${weather}` : `${shortDate(today)}\n${weather}`;
   return blocks.length ? `${head}\n\n${blocks.join("\n\n")}` : `${head}\nNichts Neues.`;
 }

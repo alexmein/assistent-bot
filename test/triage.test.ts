@@ -37,18 +37,17 @@ describe("Darstellung", () => {
   });
 });
 
-describe("Meldungen (Entscheidung 49)", () => {
+describe("Meldungen (Entscheidung 57)", () => {
   const v = (n: number, k = 0) => checkVorbereitung({ punkte: Array.from({ length: n }, (_, i) => punkt(i + 1, i < k)), technik: null });
-  it("montags immer", () => {
-    expect(notice(v(3), "Mon", 0)).toBe("Triage liegt bereit: 3 Punkte, davon 0 fristkritisch.");
+  it("montags keine Meldung", () => {
+    expect(notice(v(3, 1), "Mon")).toBeNull();
   });
   it("donnerstags Erinnerung an zusätzliche Triage, wenn mehr als eine Runde offen ist", () => {
-    expect(notice(v(11, 2), "Thu", 2)).toBe("Triage: schon 11 Punkte offen, davon 2 fristkritisch – eine zusätzliche Triage vor Montag lohnt sich.");
-    expect(notice(v(10), "Thu", 0)).toBeNull();
+    expect(notice(v(11, 2), "Thu")).toBe("Triage: schon 11 Punkte offen, davon 2 fristkritisch – eine zusätzliche Triage vor Montag lohnt sich.");
+    expect(notice(v(10), "Thu")).toBeNull();
   });
-  it("sonst nur bei neuen fristkritischen Punkten", () => {
-    expect(notice(v(5, 1), "Wed", 1)).toBeNull();
-    expect(notice(v(5, 2), "Wed", 1)).toBe("Triage: neuer fristkritischer Punkt (2 insgesamt). Triage liegt bereit: 5 Punkte, davon 2 fristkritisch.");
+  it("sonst keine Meldung, auch nicht bei neuen fristkritischen Punkten", () => {
+    expect(notice(v(5, 2), "Wed")).toBeNull();
   });
 });
 

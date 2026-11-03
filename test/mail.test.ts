@@ -10,6 +10,7 @@ import {
   injectionFlags,
   parseMessage,
   pollMail,
+  urgentLines,
   senderName,
   type Analysis,
   type GmailMessage,
@@ -281,7 +282,7 @@ describe("pollMail", () => {
   it("verarbeitet neue Mails, älteste zuerst, überspringt erledigte, ohne Werkzeuge mit festem Schema", async () => {
     const { d, create, lines, store } = deps(["neu2", "alt", "neu1"], [json(analysis({ kurz: "erste" })), json(analysis({ kurz: "zweite" }))], { alt: "done" });
     const run = await pollMail(d);
-    expect(run).toEqual({ report: ["Hausverwaltung Müller: eingang › Unzugeordnet", "Hausverwaltung Müller: eingang › Unzugeordnet"], ignored: 0 });
+    expect(run).toEqual({ report: ["Hausverwaltung Müller: eingang › Unzugeordnet", "Hausverwaltung Müller: eingang › Unzugeordnet"], ignored: 0, urgent: [] });
     expect(lines[0].line).toContain("erste");
     expect(store.get("neu1")).toBe("done");
     expect(store.get("neu2")).toBe("done");
@@ -294,13 +295,13 @@ describe("pollMail", () => {
 
   it("Werbung/Systemmail (relevant = false) → nichts abgelegt, gezählt", async () => {
     const { d, lines } = deps(["w"], [json(analysis({ relevant: false }))]);
-    expect(await pollMail(d)).toEqual({ report: [], ignored: 1 });
+    expect(await pollMail(d)).toEqual({ report: [], ignored: 1, urgent: [] });
     expect(lines).toEqual([]);
   });
 
   it("Spam ans Hauptpostfach: ohne Modell aussortiert", async () => {
     const { d, create, store } = deps(["s"], [], {}, (id) => message(id, { plain: "Gewinn!", spam: true }));
-    expect(await pollMail(d)).toEqual({ report: [], ignored: 1 });
+    expect(await pollMail(d)).toEqual({ report: [], ignored: 1, urgent: [] });
     expect(create).not.toHaveBeenCalled();
     expect(store.get("s")).toBe("done");
   });
@@ -354,5 +355,13 @@ describe("pollMail", () => {
     const { d, create } = deps(["a", "b", "c"], [json(analysis()), json(analysis())]);
     expect((await pollMail(d, 2)).report).toHaveLength(2);
     expect(create).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Meldung auf Telegram (Entscheidung 57)", () => {
+  const t = (prio: "kritisch" | "dringend" | "standard", faellig: string | null) => ({ text: `Zahlen ${prio}`, prio, faellig, bereich: "steuern" });
+  it("nur kritische To-dos mit Frist bis übermorgen", () => {
+    const a = analysis({ todos: [t("kritisch", "2026-11-05"), t("kritisch", "2026-11-06"), t("dringend", "2026-11-03"), t("kritisch", null)] });
+    expect(urgentLines(a, "Finanzamt", "2026-11-03")).toEqual(["Frist 05.11.: Zahlen kritisch (Mail Finanzamt)"]);
   });
 });

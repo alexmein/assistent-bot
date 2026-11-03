@@ -12,7 +12,7 @@ import { checkGoogle, downloadFile, getAttachment, getMessage, GoogleError, goog
 import { GMAIL_QUERY, pollMail, type GmailMessage, type LoadedAttachment, type MailRun } from "./mail";
 import { sendDue } from "./reminders";
 import { research, UMFELD_KEY, type Ereignis } from "./umfeld";
-import { critical, notice, prepareTriage, renderTriage, telegramLine, type Vorbereitung } from "./triage";
+import { notice, prepareTriage, renderTriage, telegramLine, type Vorbereitung } from "./triage";
 import { berlin, hm, parseHm, quietTime, runDue, type Job } from "./schedule";
 
 export type { Env } from "./env";
@@ -68,7 +68,8 @@ export default {
   },
 
   // Cron alle 5 Minuten: Erinnerungen und geplante Läufe (Berliner Zeit); Mail-Eingang nur jede Viertelstunde.
-  // Meldung zum Mail-Eingang auf Telegram nur außerhalb der Ruhezeiten; abgelegt wird immer.
+  // Abgelegt wird immer still; auf Telegram nur kritische To-dos mit Frist bis übermorgen, außerhalb der Ruhezeiten
+  // (Entscheidung 57). Alles andere steht im nächsten Tagesbriefing.
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const now = new Date(controller.scheduledTime);
     if (env.STATE && env.ALLOWED_CHAT_ID) {
@@ -82,8 +83,8 @@ export default {
     const reason = mailNotReady(env);
     if (reason) return console.log(`Mail-Eingang aus: ${reason}`);
     const run = await runMail(env, 8);
-    if (run.report.length && env.ALLOWED_CHAT_ID && !quietTime(new Date())) {
-      await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID, truncate(mailText(run), TELEGRAM_MAX));
+    if (run.urgent.length && env.ALLOWED_CHAT_ID && !quietTime(new Date())) {
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID, truncate(run.urgent.join("\n"), TELEGRAM_MAX));
     }
   },
 };
@@ -95,6 +96,7 @@ function jobs(env: Env): Job[] {
     const send = (weekly: boolean) => async () => {
       const started = new Date().toISOString();
       const text = await briefing(env, (await env.STATE!.get(LAST_BRIEFING)) ?? hoursAgo(24), weekly);
+      if (!text) return; // Wochenende ohne Fälliges: keine Nachricht; „Neu eingegangen“ kommt im nächsten Briefing
       await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, truncate(text, TELEGRAM_MAX));
       await env.STATE!.put(LAST_BRIEFING, started); // erst nach dem Versand: sonst fehlt Neues im nächsten Briefing
     };
@@ -118,9 +120,8 @@ function jobs(env: Env): Job[] {
       name: "triage",
       at: (day) => (day === "Sat" || day === "Sun" ? null : hm(8, 45)),
       run: async () => {
-        const previous = Number((await env.STATE!.get(TRIAGE_CRITICAL)) ?? 0);
         const { v, path } = await triage(env);
-        const text = notice(v, berlin(new Date()).weekday, previous);
+        const text = notice(v, berlin(new Date()).weekday);
         if (text) await sendMessageOrThrow(env.TELEGRAM_BOT_TOKEN, env.ALLOWED_CHAT_ID!, `${text} (${path})`);
       },
     });
@@ -140,7 +141,6 @@ function jobs(env: Env): Job[] {
 
 const LAST_BRIEFING = "briefing:last";
 const TRIAGE_REQUESTED = "triage:requested";
-const TRIAGE_CRITICAL = "triage:critical"; // fristkritische Punkte der letzten Vorbereitung
 
 async function requestedUmfeld(env: Env): Promise<void> {
   if (!(await env.STATE!.get(UMFELD_REQUESTED))) return;
@@ -188,7 +188,6 @@ async function triage(env: Env): Promise<{ v: Vorbereitung; path: string }> {
   const m = await env.STATE!.get<MetaResult>(META_KEY, "json");
   const fresh = m && Date.parse(date) - Date.parse(m.datum) <= 7 * 86_400_000;
   await writeTriageFile(env, path, renderTriage(v, date, fresh ? renderMeta(m) : undefined), `${path}: Vorbereitung (via Briefing)`);
-  await env.STATE!.put(TRIAGE_CRITICAL, String(critical(v)));
   return { v, path };
 }
 
@@ -204,7 +203,6 @@ function briefing(env: Env, sinceIso: string, weekly = false): Promise<string> {
       weather: () => fetchWeather(),
       umfeld: async () => (await env.STATE?.get<Ereignis[]>(UMFELD_KEY, "json")) ?? [],
       ...(googleReady(env) ? { calendar: (from: string, to: string) => listEvents(env, from, to) } : {}),
-      meta: async () => (await env.STATE?.get<MetaResult>(META_KEY, "json")) ?? null,
       now: () => new Date(),
     },
     sinceIso,
@@ -326,7 +324,7 @@ async function reply(text: string | undefined, env: Env, chatId: string): Promis
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId);
     const since = (await env.STATE?.get(LAST_BRIEFING)) ?? hoursAgo(24);
     try {
-      return truncate(await briefing(env, since), TELEGRAM_MAX);
+      return truncate((await briefing(env, since)) || "Heute nichts fällig – am Wochenende käme kein Briefing.", TELEGRAM_MAX);
     } catch (e) {
       return `Briefing fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
     }

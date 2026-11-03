@@ -150,13 +150,12 @@ export function telegramLine(v: Vorbereitung): string {
   return `Triage liegt bereit: ${v.punkte.length} Punkte${rounds > 1 ? ` in ${rounds} Runden` : ""}, davon ${critical(v)} fristkritisch.`;
 }
 
-// Wann sich Telegram meldet (Entscheidung 49): montags immer; donnerstags, wenn mehr als eine Runde offen ist
-// (Erinnerung an eine zusätzliche Triage); sonst nur, wenn fristkritische Punkte dazugekommen sind.
-export function notice(v: Vorbereitung, weekday: string, previousCritical: number): string | null {
-  if (weekday === "Mon") return telegramLine(v);
+// Wann sich Telegram meldet (Entscheidung 57, ersetzt 49): nur donnerstags, wenn mehr als eine Runde offen ist
+// (Erinnerung an eine zusätzliche Triage). Montags weiß Alex, dass Triage ist; kritische Fristen bringen das
+// Tagesbriefing und die Mail-Meldung (kritisch, Frist bis übermorgen).
+export function notice(v: Vorbereitung, weekday: string): string | null {
   if (weekday === "Thu" && v.punkte.length > PER_ROUND) {
     return `Triage: schon ${v.punkte.length} Punkte offen, davon ${critical(v)} fristkritisch – eine zusätzliche Triage vor Montag lohnt sich.`;
   }
-  if (critical(v) > previousCritical) return `Triage: neuer fristkritischer Punkt (${critical(v)} insgesamt). ${telegramLine(v)}`;
   return null;
 }

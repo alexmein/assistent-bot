@@ -475,11 +475,22 @@ export interface MailDeps extends FileDeps {
 export interface MailRun {
   report: string[]; // je abgelegter Mail „Absender: Ergebnis“ – für Telegram
   ignored: number; // Werbung, Systemmails, Spam ohne Weiterleitung
+  urgent: string[]; // kritische To-dos mit Frist in ≤ 2 Tagen – nur die gehen sofort auf Telegram (Entscheidung 57)
+}
+
+const URGENT_DAYS = 2;
+
+// Eine Mail unterbricht Alex nur, wenn sie ein kritisches To-do mit Frist bis übermorgen bringt (Entscheidung 57).
+export function urgentLines(a: Analysis, from: string, today: string): string[] {
+  const limit = new Date(Date.parse(`${today}T12:00:00Z`) + URGENT_DAYS * 86_400_000).toISOString().slice(0, 10);
+  return a.todos
+    .filter((t) => t.prio === "kritisch" && t.faellig !== null && t.faellig <= limit)
+    .map((t) => `Frist ${t.faellig!.slice(8, 10)}.${t.faellig!.slice(5, 7)}.: ${t.text} (Mail ${from})`);
 }
 
 export async function pollMail(deps: MailDeps, max = 8): Promise<MailRun> {
   const today = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
-  const run: MailRun = { report: [], ignored: 0 };
+  const run: MailRun = { report: [], ignored: 0, urgent: [] };
   const ids = (await deps.list()).reverse(); // älteste zuerst
   let handled = 0;
   for (const id of ids) {
@@ -518,8 +529,10 @@ export async function pollMail(deps: MailDeps, max = 8): Promise<MailRun> {
     await deps.seen.put(id, "done", { expirationTtl: SEEN_TTL });
     const done = await file(mail, analysis, deps, today, files);
     console.log(`Mail ${id}: ${done.length} Einträge`); // ohne Inhalt (R7)
-    if (done.length) run.report.push(`${mail.from}: ${done.join(", ")}`);
-    else run.ignored++;
+    if (done.length) {
+      run.report.push(`${mail.from}: ${done.join(", ")}`);
+      if (!mail.spam && !(analysis.einflussnahme ?? mail.flags[0])) run.urgent.push(...urgentLines(analysis, mail.from, today));
+    } else run.ignored++;
   }
   return run;
 }

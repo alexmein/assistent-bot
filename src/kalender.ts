@@ -60,8 +60,8 @@ export function parsePeriods(text: string): Period[] {
 }
 
 // Heute Laufendes und was in den nächsten 7 Tagen beginnt.
-export function calendarLines(today: string, periods: Period[]): string[] {
-  const week = addDays(today, 7);
+export function calendarLines(today: string, periods: Period[], days = 7): string[] {
+  const week = addDays(today, days);
   const lines: string[] = [];
   for (const p of [...periods].sort((a, b) => a.start.localeCompare(b.start))) {
     if (p.start <= today && today <= p.end) {

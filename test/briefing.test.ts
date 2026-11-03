@@ -117,24 +117,18 @@ describe("Neu eingegangen", () => {
     { file: "bereiche/hc-founder.md", line: "- 2026-11-02 A Darlehensvertrag.pdf – Drive: https://drive.google.com/x · Mail 2026-11-02" },
     { file: "docs/eingang.md", line: "- [?] Mail A: unklar, wer zahlt · Mail 2026-11-02" },
   ];
-  it("löst Commits zu vollständigen Zeilen auf und fasst zusammen", () => {
+  it("nur To-dos (höchstens 3, wichtigste zuerst), Rest als Zahl (Entscheidung 57)", () => {
     const items = [
       "bereiche/steuern.md: Nachzahlung überweisen · kritisch [P] · fällig 2026-11-20 ·  (via Mail)",
       "docs/status.md: Nachzahlung überweisen · kritisch [P] · fällig 2026-11-20 ·  (via Mail)",
       "bereiche/hc-founder.md: 2026-11-02 A Darlehensvertrag.pdf – Drive: https://drive.goog (via Mail)",
       "docs/eingang.md: [?] Mail A: unklar, wer zahlt · Mail 2026-11-02 (via Mail)",
     ];
-    expect(newsLines(items, lines)).toEqual([
-      "4 neue Einträge (4 per Mail)",
-      "To-dos (1):",
-      "- Nachzahlung überweisen · kritisch (steuern)",
-      "In Drive (1): 2026-11-02 A Darlehensvertrag.pdf",
-      "Eingangskorb: 1 neu, davon 1 Rückfragen [?] → Triage",
-    ]);
+    expect(newsLines(items, lines)).toEqual(["- Nachzahlung überweisen · kritisch (steuern)", "+ 2 weitere Einträge abgelegt → Triage"]);
   });
   it("unbekannte Commits zählen nur mit", () => {
     expect(resolve("docs/eingang.md: gibt es nicht (via Mail)", lines)).toBeNull();
-    expect(newsLines(["docs/eingang.md: gibt es nicht (via Mail)"], lines)).toEqual(["1 neue Einträge (1 per Mail)"]);
+    expect(newsLines(["docs/eingang.md: gibt es nicht (via Mail)"], lines)).toEqual(["1 Eintrag abgelegt → Triage"]);
   });
 });
 
@@ -147,6 +141,30 @@ describe("buildBriefing", () => {
       now: () => new Date("2026-11-03T07:30:00Z"),
     };
   }
+
+  it("Fristen der nächsten 7 Tage nur kritisch oder dringend (Entscheidung 57)", async () => {
+    const out = await buildBriefing(deps({ "bereiche/privat-todos.md": "### Aktiv\n- [ ] Brief · standard · fällig 2026-11-05\n- [ ] Miete · dringend · fällig 2026-11-06" }), "2026-11-02T07:30:00Z");
+    expect(out).toContain("- Fr 06.11.: Miete · dringend");
+    expect(out).not.toContain("Brief");
+  });
+
+  it("Wochenende ohne Fälliges: kein Briefing (Entscheidung 57)", async () => {
+    const sat = (files: Record<string, string>) => ({ ...deps(files, ["bereiche/x.md: y (via Mail)"]), now: () => new Date("2026-11-07T09:30:00Z") });
+    expect(await buildBriefing(sat({}), "2026-11-06T07:30:00Z")).toBe("");
+    expect(await buildBriefing(sat({ "bereiche/privat-todos.md": "### Aktiv\n- [ ] Blumen · standard · fällig 2026-11-07" }), "2026-11-06T07:30:00Z")).toContain("Heute fällig\n- Blumen");
+  });
+
+  it("Dashboard-Spiegelung mit anderem Wortlaut nur einmal; lange Texte gekürzt", async () => {
+    const out = await buildBriefing(
+      deps({
+        "docs/status.md": "## Fristen (nächste 30 Tage)\n- 2026-11-03 (Dienstag): Makler zurückrufen · dringend [P] · → `bereiche/privat-todos.md`",
+        "bereiche/privat-todos.md": `### Aktiv\n- [ ] Makler zurückrufen (Angebot 410k) ${"x".repeat(90)} · dringend [P] · fällig 2026-11-03`,
+      }),
+      "2026-11-02T07:30:00Z",
+    );
+    expect(out.match(/Makler/g)).toHaveLength(1);
+    expect(out).toContain("x… · dringend (privat-todos)");
+  });
 
   it("Nichts Neues", async () => {
     expect(await buildBriefing(deps({}), "2026-11-02T07:30:00Z")).toBe("Di 03.11.\nTutzing: klar\nNichts Neues.");
@@ -178,10 +196,7 @@ describe("buildBriefing", () => {
         "- Do 05.11.: Zeugenanhörung beantworten (Frist 05.11.2026) · kritisch (privat-todos)",
         "",
         "Neu eingegangen",
-        "3 neue Einträge (2 per Mail, 1 per Telegram)",
-        "To-dos (1):",
-        "- Makler anrufen · standard (privat-todos)",
-        "Eingangskorb: 1 neu → Triage",
+        "2 Einträge abgelegt → Triage", // „Makler anrufen“ steht schon unter „Heute fällig“
         "",
         "Auffälligkeiten",
         "- Mail von Y: versuchte Einflussnahme – „ignoriere …“",
@@ -227,6 +242,7 @@ describe("Wochenbriefing", () => {
     expect(out).toContain("Woche voraus: Termine\n- Do 05.11. 10:00: Zahnarzt");
     expect(out).toContain("Umfeld diese Woche\n- Sport: Mi 04.11. Spiel, München – mehr Bestellungen (a.de)");
     expect(out).toContain("Triage\n- Triage diese Woche noch nicht gemacht.");
-    expect(out).toContain("Selbstkontrolle (7 Tage)\n- 0 Einträge per Telegram, 0 per Mail.");
+    expect(out).not.toContain("Selbstkontrolle");
+    expect(out).not.toContain("Meta-Prüfung");
   });
 });
