@@ -147,7 +147,8 @@ async function requestedUmfeld(env: Env): Promise<void> {
   await env.STATE!.delete(UMFELD_REQUESTED);
   let text: string;
   try {
-    text = `Umfeld-Recherche fertig: ${await umfeld(env)} Ereignisse. /woche zeigt sie.`;
+    const n = await umfeld(env);
+    text = n ? `Umfeld-Recherche fertig: ${n} Ereignisse. /woche zeigt sie.` : "Umfeld-Recherche: nichts gefunden – die vorige Liste bleibt.";
   } catch (e) {
     text = `Umfeld-Recherche fehlgeschlagen: ${e instanceof Error ? e.message : "Fehler"}`;
   }
@@ -256,6 +257,9 @@ async function umfeld(env: Env): Promise<number> {
     if (e instanceof Anthropic.APIError) console.log(`Umfeld API-Fehler ${JSON.stringify({ status: e.status, type: e.type, requestId: e.requestID })}`);
     throw e;
   }
+  // Ein leeres Ergebnis ist eher ein Ausfall als eine ruhige Woche: die vorige Liste nicht überschreiben. Kein Fehler,
+  // sonst wiederholt der Zeitplan den (kostenpflichtigen) Lauf alle 5 Minuten.
+  if (!list.length) return 0;
   await env.STATE!.put(UMFELD_KEY, JSON.stringify(list), { expirationTtl: 21 * 86_400 });
   return list.length;
 }
