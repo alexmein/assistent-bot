@@ -28,6 +28,15 @@ export interface Vorbereitung {
 
 export const PER_ROUND = 10; // CLAUDE.md §6: höchstens 10 Punkte pro Runde
 const MAX_POINTS = 40;
+// Erledigtes und Entschiedenes, damit Archiviertes nicht wiederkommt; nur das Ende (neueste Einträge stehen unten)
+const HISTORY = ["archiv/erledigt.md", "docs/decisions.md"];
+const MAX_HISTORY_CHARS = 25_000;
+
+export function tail(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const rest = text.slice(-max);
+  return `(… ältere Einträge gekürzt)\n${rest.slice(rest.indexOf("\n") + 1)}`;
+}
 
 const SCHEMA = {
   type: "object",
@@ -64,6 +73,8 @@ Was in die Triage gehört (§6.1):
 - Wartende To-dos, die länger als 3 Wochen still sind.
 - Widersprüche [?].
 
+Was schon erledigt ist (CLAUDE.md R10, Entscheidung 61): Steht etwas in archiv/erledigt.md oder ist es in docs/decisions.md entschieden, bringst du es nie wieder als Punkt – auch wenn ein älterer Commit es noch zeigt. Commits zeigen nur, was neu dazukam; maßgeblich für den Stand sind die Dateien.
+
 Regeln:
 - Alle Punkte, die eine Entscheidung brauchen (höchstens 40), sortiert: fristkritische zuerst (Frist ≤ 7 Tage oder kritisch), dann nach Wichtigkeit. Der Code teilt sie in Runden zu 10.
 - Zusammengehöriges bündeln (z. B. dieselbe Aufgabe in Bereich und Dashboard, mehrere Testeinträge, mehrere falsch eingeordnete Mail-Einträge) – ein Punkt. Aber nur, was dieselbe Empfehlung bekommt: Alex' „ok“ gilt für den ganzen Punkt.
@@ -82,12 +93,13 @@ export interface TriageDeps {
 
 export async function prepareTriage(deps: TriageDeps, sinceIso: string): Promise<Vorbereitung> {
   const today = deps.now().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
-  const paths = ["docs/status.md", "docs/eingang.md", ...BEREICHE.map((b) => `bereiche/${b}.md`)];
+  const paths = ["docs/status.md", "docs/eingang.md", ...BEREICHE.map((b) => `bereiche/${b}.md`), ...HISTORY];
   const [commits, ...files] = await Promise.all([deps.commitsSince(sinceIso), ...paths.map((p) => deps.readFile(p))]);
+  const fileText = (i: number) => (files[i].ok ? (files[i] as { text: string }).text : "(nicht lesbar)");
   const content = [
     `Heute: ${today}.`,
     `# Commits seit ${sinceIso.slice(0, 10)} (neueste zuerst) – zeigen, was neu ist\n${commits.map((m) => `- ${m.split("\n")[0]}`).join("\n") || "(keine)"}`,
-    ...paths.map((p, i) => `# ${p}\n\n${files[i].ok ? (files[i] as { text: string }).text : "(nicht lesbar)"}`),
+    ...paths.map((p, i) => `# ${p}\n\n${HISTORY.includes(p) ? tail(fileText(i), MAX_HISTORY_CHARS) : fileText(i)}`),
   ].join("\n\n");
 
   const response = await deps.client.messages.create({

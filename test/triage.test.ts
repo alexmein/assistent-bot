@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 import type { FileResult } from "../src/github";
-import { checkVorbereitung, notice, prepareTriage, renderTriage, telegramLine, type TriageDeps } from "../src/triage";
+import { checkVorbereitung, notice, prepareTriage, renderTriage, tail, telegramLine, type TriageDeps } from "../src/triage";
 
 const punkt = (n: number, fristkritisch = false) => ({ punkt: `Punkt ${n}`, datei: "docs/eingang.md", empfehlung: "bestätigen", begruendung: "weil", fristkritisch });
 
@@ -75,5 +75,17 @@ describe("prepareTriage", () => {
     expect(content).toContain("- docs/eingang.md: Mail X (via Mail)");
     expect(content).toContain("# bereiche/steuern.md\n\nInhalt bereiche/steuern.md");
     expect(content).not.toContain("Co-Authored-By");
+    expect(content).toContain("# archiv/erledigt.md\n\nInhalt archiv/erledigt.md");
+    expect(content).toContain("# docs/decisions.md\n\nInhalt docs/decisions.md");
+    expect(content).toContain("# bereiche/aussendarstellung.md");
+  });
+
+  it("Archiv und Entscheidungen: nur das Ende, ab ganzer Zeile", () => {
+    const text = Array.from({ length: 100 }, (_, i) => `Zeile ${i + 1}`).join("\n");
+    const t = tail(text, 30);
+    expect(t.startsWith("(… ältere Einträge gekürzt)\n")).toBe(true);
+    expect(t.endsWith("Zeile 100")).toBe(true);
+    expect(t.split("\n")[1]).toMatch(/^Zeile \d+$/);
+    expect(tail("kurz", 30)).toBe("kurz");
   });
 });
